@@ -283,6 +283,7 @@ Every push and pull request runs [`.github/workflows/android-build.yml`](.github
 | Lint | `./gradlew :app:lintDebug` |
 | Unit tests | `./gradlew :app:testDebugUnitTest` |
 | APK | `./gradlew :app:assembleDebug` |
+| Checksum | APK size and SHA-256 recorded in the log and the job summary |
 | Artifact | `app/build/outputs/apk/debug/*.apk` uploaded as `motionflow-debug-apk` |
 
 Any failing stage fails the workflow; no step is allowed to continue on error.

@@ -68,6 +68,18 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      # Record what was built, so an artifact can be traced back to the commit that produced it
+      # without downloading it first. The digest also lands in the job summary.
+      - name: Record APK checksum
+        run: |
+          for apk in app/build/outputs/apk/debug/*.apk; do
+            name=$(basename "$apk")
+            size=$(stat -c%s "$apk")
+            digest=$(sha256sum "$apk" | cut -d' ' -f1)
+            echo "$name: $size bytes, sha256 $digest"
+            echo "- \`$name\` — $size bytes — \`sha256:$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
