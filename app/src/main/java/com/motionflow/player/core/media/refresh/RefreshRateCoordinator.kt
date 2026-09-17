@@ -34,6 +34,10 @@ data class RefreshRateState(
 /**
  * Decides, applies and remembers display refresh-rate preferences for the player screen.
  *
+ * [scope] must outlive the coordinator and be cancelled by whoever owns it — the player view model
+ * passes its own scope, and tests pass a scope that tolerates long-running collectors. The
+ * coordinator's signal and display-change collectors run for as long as it does.
+ *
  * Android-free on purpose: the platform is reached through [RefreshRateController] and
  * [DisplayCapabilityProvider], both of which are faked in tests. That is what makes the whole
  * decision path — including what happens when a request is refused — verifiable without a device.

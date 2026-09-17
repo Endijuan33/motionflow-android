@@ -16,7 +16,8 @@ import org.junit.Test
  * quiet, and what it leaves behind when the screen goes away.
  *
  * The coordinator's scope runs unconfined here so that its signal handling completes inline, which
- * keeps every assertion about *when* a request happened exact rather than timing dependent.
+ * keeps every assertion about *when* a request happened exact rather than timing dependent, and it is
+ * the test's `backgroundScope` because the coordinator's collectors live as long as it does.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RefreshRateCoordinatorTest {
@@ -25,7 +26,7 @@ class RefreshRateCoordinatorTest {
     fun `a decision is applied once it has both a cadence and a display`() =
         runTest(UnconfinedTestDispatcher()) {
             val controller = FakeController()
-            val coordinator = RefreshRateCoordinator(this)
+            val coordinator = RefreshRateCoordinator(backgroundScope)
 
             coordinator.onVideoFrameRate(measuredFps(24f))
             assertEquals("nothing to apply against yet", 0, controller.applications.size)
@@ -40,7 +41,7 @@ class RefreshRateCoordinatorTest {
     @Test
     fun `the same decision is not requested twice`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController()
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 24f, currentHz = 60f)))
 
         coordinator.onVideoFrameRate(measuredFps(24f))
@@ -59,7 +60,7 @@ class RefreshRateCoordinatorTest {
     @Test
     fun `a refined cadence does produce a new request`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController()
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(
             controller,
             FakeCapabilityProvider(displayOf(60f, 24f, 23.976f, currentHz = 60f)),
@@ -83,7 +84,7 @@ class RefreshRateCoordinatorTest {
     @Test
     fun `an unknown cadence never asks for anything`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController()
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 120f)))
 
         coordinator.onVideoFrameRate(FrameRateInfo.Unknown)
@@ -98,7 +99,7 @@ class RefreshRateCoordinatorTest {
     fun `a display change is recomputed`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController()
         val provider = FakeCapabilityProvider(displayOf(60f, currentHz = 60f))
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(controller, provider)
         coordinator.onVideoFrameRate(measuredFps(24f))
 
@@ -117,7 +118,7 @@ class RefreshRateCoordinatorTest {
     fun `leaving the screen restores the display and forgets the request`() =
         runTest(UnconfinedTestDispatcher()) {
             val controller = FakeController()
-            val coordinator = RefreshRateCoordinator(this)
+            val coordinator = RefreshRateCoordinator(backgroundScope)
             coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 24f, currentHz = 60f)))
             coordinator.onVideoFrameRate(measuredFps(24f))
             assertEquals(1, controller.applications.size)
@@ -133,7 +134,7 @@ class RefreshRateCoordinatorTest {
     fun `leaving the screen without having asked for anything does not touch the display`() =
         runTest(UnconfinedTestDispatcher()) {
             val controller = FakeController()
-            val coordinator = RefreshRateCoordinator(this)
+            val coordinator = RefreshRateCoordinator(backgroundScope)
             coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f)))
             coordinator.onVideoFrameRate(FrameRateInfo.Unknown)
 
@@ -145,7 +146,7 @@ class RefreshRateCoordinatorTest {
     @Test
     fun `turning automatic selection off hands the display back`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController()
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 24f, currentHz = 60f)))
         coordinator.onVideoFrameRate(measuredFps(24f))
         assertEquals(1, controller.applications.size)
@@ -163,7 +164,7 @@ class RefreshRateCoordinatorTest {
     fun `a refused request is reported without pretending it worked`() =
         runTest(UnconfinedTestDispatcher()) {
             val controller = FakeController().apply { refuseEverything = true }
-            val coordinator = RefreshRateCoordinator(this)
+            val coordinator = RefreshRateCoordinator(backgroundScope)
             coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 24f, currentHz = 60f)))
             coordinator.onVideoFrameRate(measuredFps(24f))
 
@@ -183,7 +184,7 @@ class RefreshRateCoordinatorTest {
     @Test
     fun `a controller that throws is treated as a refusal`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController().apply { throwOnApply = true }
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 24f, currentHz = 60f)))
 
         coordinator.onVideoFrameRate(measuredFps(24f))
@@ -199,7 +200,7 @@ class RefreshRateCoordinatorTest {
         runTest(UnconfinedTestDispatcher()) {
             val controller = FakeController()
             val provider = FakeCapabilityProvider(displayOf(60f)).apply { throwOnRead = true }
-            val coordinator = RefreshRateCoordinator(this)
+            val coordinator = RefreshRateCoordinator(backgroundScope)
             coordinator.attach(controller, provider)
 
             coordinator.onVideoFrameRate(measuredFps(24f))
@@ -216,7 +217,7 @@ class RefreshRateCoordinatorTest {
     fun `a burst of inputs settles on the video that is actually on screen`() =
         runTest(UnconfinedTestDispatcher()) {
             val controller = FakeController()
-            val coordinator = RefreshRateCoordinator(this)
+            val coordinator = RefreshRateCoordinator(backgroundScope)
             coordinator.attach(
                 controller,
                 FakeCapabilityProvider(displayOf(60f, 24f, 30f, currentHz = 60f)),
@@ -247,7 +248,7 @@ class RefreshRateCoordinatorTest {
     @Test
     fun `state keeps the video cadence and the display rate apart`() = runTest(UnconfinedTestDispatcher()) {
         val controller = FakeController()
-        val coordinator = RefreshRateCoordinator(this)
+        val coordinator = RefreshRateCoordinator(backgroundScope)
         coordinator.attach(controller, FakeCapabilityProvider(displayOf(60f, 24f, currentHz = 24f)))
 
         coordinator.onVideoFrameRate(measuredFps(23.976f))
