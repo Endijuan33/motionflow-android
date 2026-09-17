@@ -20,6 +20,8 @@ import com.motionflow.player.MotionFlowApplication
 import com.motionflow.player.core.media.metadata.MetadataError
 import com.motionflow.player.core.media.metadata.MetadataResult
 import com.motionflow.player.core.media.metadata.TrackFormatHint
+import com.motionflow.player.core.media.pacing.FramePacingCoordinator
+import com.motionflow.player.core.media.pacing.FramePacingState
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
@@ -69,6 +71,18 @@ class PlayerViewModel(
      * preference does.
      */
     val refreshRateState: StateFlow<RefreshRateState> = refreshRateCoordinator.state
+
+    /**
+     * Cadence and pacing diagnostics for the current video.
+     *
+     * No pacing mechanism is supplied, so every decision is a diagnosis. See `FramePacingController`
+     * for why nothing in the current architecture can change frame presentation without replacing
+     * Media3's video renderer — the diagnostics say "diagnostic only" precisely because that is the
+     * honest answer, rather than reporting a fix that does not exist.
+     */
+    private val framePacingCoordinator = FramePacingCoordinator(viewModelScope)
+
+    val framePacingState: StateFlow<FramePacingState> = framePacingCoordinator.state
 
     private val sourceUri: String? = PlayerRoute.sourceUriOf(savedStateHandle)
 
@@ -128,6 +142,11 @@ class PlayerViewModel(
     init {
         connectToSession()
         pollPositionWhileAttached()
+        // The refresh engine owns the display decision; the pacing engine analyses what that left
+        // behind, including the case where the platform would not move the display.
+        viewModelScope.launch {
+            refreshRateCoordinator.state.collect { framePacingCoordinator.onRefreshRateState(it) }
+        }
     }
 
     fun playPause() {
@@ -310,6 +329,7 @@ class PlayerViewModel(
                 val frameRate = (result as? MetadataResult.Success)?.metadata?.video?.frameRate
                 if (frameRate != null) {
                     refreshRateCoordinator.onVideoFrameRate(frameRate)
+                    framePacingCoordinator.onVideoFrameRate(frameRate)
                 }
             }
         }

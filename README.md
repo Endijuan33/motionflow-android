@@ -30,14 +30,15 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 3 — Adaptive Display Refresh Rate. Complete.**
+**Phase 4 — Cadence-Aware Frame Pacing. Complete.**
 
-The application plays a local video end to end, describes it, and asks the display to refresh at a
-rate that suits the video's cadence. The metadata engine reads the container and track headers,
-measures the frame rate from sample timing, names the codec and the decoder the platform would use,
-and reports colour, rotation, audio layout and file size — showing "Unknown" for anything it
-genuinely does not know. The refresh-rate engine then matches that cadence against the display's own
-modes and requests one.
+The application plays a local video end to end, describes it, asks the display to refresh at a rate
+that suits the video's cadence, and then reports how well those two rates actually line up. The
+metadata engine reads the container and track headers, measures the frame rate from sample timing,
+names the codec and the decoder the platform would use, and reports colour, rotation, audio layout
+and file size — showing "Unknown" for anything it genuinely does not know. The refresh-rate engine
+matches that cadence against the display's own modes and requests one. The pacing engine analyses the
+result and says plainly whether every frame can be held for the same number of refreshes.
 
 What exists now:
 
@@ -52,12 +53,16 @@ What exists now:
 - **Phase 3** — adaptive display refresh rate: a pure matching policy over the display's reported
   modes, a window-level request through the platform's refresh-rate API, diagnostics on the player
   surface, and lifecycle handling that restores the display when the screen goes away.
+- **Phase 4** — cadence-aware frame pacing: a pure classifier for the relationship between the two
+  rates, the pattern of frame holds it implies, diagnostics stating whether pacing was actually
+  applied, and a seam for the phase that owns a renderer.
 
 Explicitly **not** implemented: frame interpolation, AI-generated frames, optical flow, motion
 estimation, OpenGL/Vulkan rendering, custom shaders, decoder replacement and frame synthesis. **A
 display running at 60 Hz is not a video containing 60 frames**: matching a refresh rate changes how
 often the panel redraws, not how many frames exist. Nothing in MotionFlow claims that a 24 fps video
-becomes a 60 fps one.
+becomes a 60 fps one, and **frame pacing is not interpolation** — it can only decide *when* frames
+that already exist are shown, never invent new ones.
 
 ## Technology Stack
 
@@ -102,6 +107,7 @@ app/src/main/java/com/motionflow/player/
 │   ├── designsystem/theme/       colour, type, shape, spacing, elevation, motion tokens
 │   └── media/
 │       ├── metadata/             describing a source: container, tracks, frame rate, colour, audio
+│       ├── pacing/               cadence analysis: how the display's rate relates to the video's
 │       ├── player/               player engine: factory, ownership, state and error mapping
 │       ├── refresh/              display refresh-rate matching, and its Android implementation
 │       └── session/              media session service
@@ -267,6 +273,72 @@ Supported API range: **26–36**, using only public API that exists from API 23 
 are no version branches, no reflection and no hidden APIs. Exact physical mode switching is therefore
 best-effort by design on every Android version.
 
+## Frame pacing
+
+**Frame pacing is not frame interpolation.** Pacing can only decide *when* frames that already exist
+are presented; interpolation invents frames that were never decoded. MotionFlow does not interpolate:
+there is no AI model, no optical flow, no motion estimation, no custom shader and no OpenGL or Vulkan
+renderer in this project. When the diagnostics say a display is running at 120 Hz for 24 fps content,
+the video still contains twenty-four frames a second — each shown five times.
+
+### What it analyses
+
+The relationship between the display's rate and the video's rate, and whether every frame can be held
+for the same number of refreshes:
+
+| Video | Display | Ratio | Classification |
+| --- | --- | --- | --- |
+| 24 fps | 24 Hz | 1.0 | 1:1 — every frame once |
+| 24 fps | 48 Hz | 2.0 | Integer multiple — every frame twice |
+| 30 fps | 60 Hz | 2.0 | Integer multiple |
+| 60 fps | 120 Hz | 2.0 | Integer multiple |
+| 29.97 fps | 59.94 Hz | 2.0 | Integer multiple |
+| 24 fps | 60 Hz | 2.5 | 3:2 pattern — uneven: 3 refreshes, then 2 |
+| 23.976 fps | 59.94 Hz | 2.5 | The same 3:2 pattern |
+| 25 fps | 60 Hz | 2.4 | A longer uneven pattern, repeating every 5 frames |
+| 24 fps | 59.94 Hz | 2.4975 | No short pattern: the display drifts against the video |
+| 60 fps | 50 Hz | 0.83 | Display slower than the source |
+| unknown | anything | — | Not analysed |
+
+**Integer multiples are what you want**, because every frame is then held equally long. A fractional
+relationship is never even: 24 fps on a 60 Hz display alternates holds of 3 and 2 refreshes, which is
+the judder this phase exists to identify.
+
+**Tolerance: 0.2% on the ratio**, the same figure the refresh engine uses, so the two cannot disagree
+about a pair. That is a display-rate margin of 0.048 Hz at 24 fps — wide enough for measurement
+noise, narrow enough that 59.94 Hz is not mistaken for a multiple of 24.000 fps (0.06 Hz away, and
+genuinely drifting).
+
+**One coincidence worth stating plainly.** 24 fps on 60 Hz and 23.976 fps on 59.94 Hz are *the same
+ratio* — exactly five refreshes to two frames. A classifier that is a function of the two rates must
+give them the same answer, so both are reported as the 3:2 pattern. Only a policy that penalised
+whole-rate pairings could separate them, and that would be a judgement about the rates rather than a
+fact about the cadence.
+
+### What it does about it: nothing, on purpose
+
+**Pacing is diagnostic-only, and the UI says so.** That is a deliberate limitation, not unfinished
+work:
+
+- Changing *when* a frame is presented means controlling frame release inside Media3's video renderer.
+  `MediaCodecVideoRenderer` releases output buffers itself, and the only app-facing hook,
+  `VideoFrameMetadataListener`, is *told* the release time rather than being able to change it.
+  Intervening means supplying a custom renderer, which replaces the rendering path this project has
+  deliberately left to Media3.
+- What can be done without one is already being done: **Media3** calls `Surface.setFrameRate(...)` on
+  API 30+ from its own `VideoFrameReleaseHelper`, with `FRAME_RATE_COMPATIBILITY_FIXED_SOURCE` for a
+  steady source, and **Phase 3** asks the platform for a display mode that suits the cadence. A third
+  engine doing either would duplicate it.
+
+So the engine classifies, explains and stops. Every decision reports `isApplied = false` through the
+`FramePacingController` seam, which exists for the phase that owns a renderer. **Judder is not
+removed**: a 3:2 mismatch is identified, described, and left as it is, because nothing in the current
+architecture can present it more evenly.
+
+Device-specific validation remains necessary for all of it. Whether a display honours a mode request,
+whether it switches seamlessly, and whether the resulting motion looks better are hardware
+questions, and CI has no display.
+
 ## Build Instructions
 
 ### GitHub Actions (primary)
@@ -309,7 +381,7 @@ resolves Gradle itself.
 | 1 | **Core Video Playback** | Media3 playback, media session, local media flow, player UI. **✅ complete** |
 | 2 | **Video Metadata Detection** | Container, codec, frame rate and colour detection. **✅ complete** |
 | 3 | **Adaptive Display Refresh Rate** | Match the display's own modes to the video's cadence. **✅ complete** |
-| 4 | Frame Pacing Engine | Align frame release with presentation timestamps to remove judder |
+| 4 | **Frame Pacing Engine** | Cadence analysis and pacing diagnostics. **✅ complete** |
 | 5 | GPU Rendering Pipeline | OpenGL ES / Vulkan render path with a native surface |
 | 6 | Frame Interpolation Architecture | Pluggable interpolator contract, frame queueing, A/V sync |
 | 7 | AI-Based Interpolation | RIFE-class models via ONNX Runtime or NCNN, with thermal-aware fallbacks |
@@ -320,12 +392,14 @@ resolves Gradle itself.
 
 ## Known Limitations
 
+- **Frame pacing is diagnostic-only.** A 3:2 mismatch is identified and explained, not corrected.
+  Nothing in the current architecture can change when a decoded frame is presented without replacing
+  Media3's video renderer, and no claim of judder removal is made anywhere. See "Frame pacing" above.
+- **Frame pacing is not interpolation.** It can only decide when existing frames are shown. No frames
+  are ever synthesised, and a display refresh rate is never presented as a video frame rate.
 - **A refresh-rate request is advisory.** The platform may ignore it — in multi-window, on a device
   that switches modes on its own terms, or where only one mode exists. The diagnostics show the rate
   the display reports so the difference is visible. See "Display refresh rate" above.
-- **Refresh-rate matching does not add frames.** It changes how often the panel redraws. A 24 fps
-  video shown at 120 Hz is still 24 frames a second, each shown five times. No interpolation,
-  no AI, no custom rendering.
 - **The automatic preference is not persisted.** The player surface has an Auto/System-default
   toggle, but it lives for the session: there is no settings store yet, and adding one is a later
   phase's work rather than something to bolt on here.

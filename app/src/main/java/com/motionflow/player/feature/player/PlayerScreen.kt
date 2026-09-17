@@ -81,6 +81,14 @@ import com.motionflow.player.core.media.metadata.formatFps
 import com.motionflow.player.core.media.metadata.resolutionValue
 import com.motionflow.player.core.media.metadata.sampleRateQuantity
 import com.motionflow.player.core.media.metadata.videoCodecValue
+import com.motionflow.player.core.media.pacing.DisplayCadence
+import com.motionflow.player.core.media.pacing.FramePacingDecision
+import com.motionflow.player.core.media.pacing.FramePacingMechanism
+import com.motionflow.player.core.media.pacing.FramePacingMode
+import com.motionflow.player.core.media.pacing.FramePacingPolicy
+import com.motionflow.player.core.media.pacing.FramePacingReason
+import com.motionflow.player.core.media.pacing.FramePacingState
+import com.motionflow.player.core.media.pacing.VideoCadence
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
@@ -107,6 +115,7 @@ fun PlayerScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val player by viewModel.player.collectAsStateWithLifecycle()
     val refreshRate by viewModel.refreshRateState.collectAsStateWithLifecycle()
+    val framePacing by viewModel.framePacingState.collectAsStateWithLifecycle()
 
     RequestMediaNotificationPermission()
     AttachRefreshRateEnvironment(viewModel)
@@ -115,6 +124,7 @@ fun PlayerScreen(
         uiState = uiState,
         player = player,
         refreshRate = refreshRate.toDiagnosticsModel(),
+        framePacing = framePacing,
         onNavigateBack = onNavigateBack,
         onPlayPause = viewModel::playPause,
         onSeek = viewModel::seekTo,
@@ -178,6 +188,7 @@ private fun PlayerContent(
     uiState: PlayerUiState,
     player: Player?,
     refreshRate: RefreshRateDiagnosticsModel,
+    framePacing: FramePacingState,
     onNavigateBack: () -> Unit,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -246,6 +257,8 @@ private fun PlayerContent(
             model = refreshRate,
             onSetAutomatic = onSetAutomaticRefreshRate,
         )
+
+        FramePacingDiagnostics(state = framePacing)
     }
 }
 
@@ -829,6 +842,113 @@ private fun refreshRateReason(model: RefreshRateDiagnosticsModel): String? = whe
     else -> null
 }
 
+/**
+ * How the display's cadence relates to the video's, and what was done about it.
+ *
+ * "Cadence" names a relationship between two rates — the video's and the display's — and "pacing"
+ * says whether anything acted on it. Nothing in the application can, so the second line reads
+ * "diagnostic only" and the note explains what an uneven cadence means. Nothing here suggests a
+ * display is producing frames the video does not contain.
+ */
+@Composable
+private fun FramePacingDiagnostics(state: FramePacingState, modifier: Modifier = Modifier) {
+    val spacing = MotionFlowTheme.spacing
+    val note = pacingNote(state)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.large, vertical = spacing.small),
+        verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+    ) {
+        Text(
+            text = listOf(
+                stringResource(R.string.pacing_cadence_label, cadenceValue(state)),
+                stringResource(R.string.pacing_mechanism_label, pacingMechanismValue(state)),
+            ).joinToString(SUMMARY_SEPARATOR),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        note?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun cadenceValue(state: FramePacingState): String {
+    val decision = state.decision
+    val ratio = state.diagnostics?.ratio
+
+    val value = when {
+        decision.mode == FramePacingMode.NATIVE_CADENCE ->
+            stringResource(R.string.pacing_cadence_native)
+
+        decision.mode == FramePacingMode.INTEGER_MULTIPLE -> ratio?.let {
+            stringResource(R.string.pacing_cadence_integer, it.refreshesPerFrame)
+        } ?: stringResource(R.string.pacing_cadence_unknown)
+
+        decision.mode == FramePacingMode.CADENCE_MISMATCH && ratio != null && ratio.patternLabel.isNotEmpty() ->
+            stringResource(R.string.pacing_cadence_pattern, ratio.patternLabel)
+
+        decision.mode == FramePacingMode.CADENCE_MISMATCH ->
+            stringResource(R.string.pacing_cadence_unresolved)
+
+        decision.mode == FramePacingMode.UNSUPPORTED ->
+            stringResource(R.string.pacing_cadence_display_too_slow)
+
+        else -> stringResource(R.string.pacing_cadence_unknown)
+    }
+
+    // A rate read from a container header can still be classified, but the diagnosis is worth less.
+    return if (decision.isReliable) {
+        value
+    } else {
+        stringResource(R.string.pacing_cadence_uncertain, value)
+    }
+}
+
+@Composable
+private fun pacingMechanismValue(state: FramePacingState): String = stringResource(
+    when (state.decision.mechanism) {
+        FramePacingMechanism.NONE -> R.string.pacing_mechanism_diagnostic_only
+    },
+)
+
+/** A note only appears when the cadence needs explaining. */
+@Composable
+private fun pacingNote(state: FramePacingState): String? {
+    val decision = state.decision
+    val requestRefused = state.diagnostics?.display?.requestRefused == true
+
+    return when {
+        requestRefused && decision.isMismatched ->
+            stringResource(R.string.pacing_note_request_refused)
+
+        decision.reason == FramePacingReason.UNRESOLVED_PATTERN ->
+            stringResource(R.string.pacing_note_unresolved)
+
+        decision.reason == FramePacingReason.SHORT_REPEATING_PATTERN ||
+            decision.reason == FramePacingReason.LONG_REPEATING_PATTERN ->
+            stringResource(R.string.pacing_note_uneven_pattern)
+
+        decision.reason == FramePacingReason.DISPLAY_TOO_SLOW ->
+            stringResource(R.string.pacing_note_display_too_slow)
+
+        decision.reason == FramePacingReason.VARIABLE_FRAME_RATE ->
+            stringResource(R.string.pacing_note_variable_frame_rate)
+
+        else -> null
+    }
+}
+
 @Composable
 private fun MetadataRow(label: String, value: String, modifier: Modifier = Modifier) {
     Row(modifier = modifier.fillMaxWidth()) {
@@ -857,6 +977,25 @@ private const val SUMMARY_SEPARATOR = " · "
 
 private const val LABEL_WEIGHT = 0.42f
 private const val VALUE_WEIGHT = 0.58f
+
+/**
+ * Builds a pacing state for previews by running the real analysis, so a preview cannot show a
+ * cadence the engine would never produce.
+ */
+private fun pacingPreview(videoFps: Float?, displayHz: Float?): FramePacingState {
+    val diagnostics = FramePacingPolicy.analyse(
+        video = VideoCadence(fps = videoFps, confidence = MetadataConfidence.HIGH),
+        display = DisplayCadence(refreshRateHz = displayHz),
+    )
+    return FramePacingState(
+        diagnostics = diagnostics,
+        decision = FramePacingDecision(
+            mode = diagnostics.mode,
+            reason = diagnostics.reason,
+            isReliable = true,
+        ),
+    )
+}
 
 @Preview(name = "Player", showBackground = true, backgroundColor = 0xFF08090C)
 @Composable
@@ -896,6 +1035,7 @@ private fun PlayerContentPreview() {
                 reason = RefreshRateReason.EXACT_MODE,
                 automaticEnabled = true,
             ),
+            framePacing = pacingPreview(videoFps = 23.976f, displayHz = 24f),
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
@@ -926,6 +1066,7 @@ private fun PlayerErrorPreview() {
                 reason = RefreshRateReason.BEST_EFFORT,
                 automaticEnabled = true,
             ),
+            framePacing = pacingPreview(videoFps = 24f, displayHz = 60f),
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},

@@ -81,4 +81,23 @@
     <string name="refresh_reason_platform_rejected">The system refused the refresh-rate request.</string>
     <string name="refresh_reason_variable_frame_rate">This video changes its frame rate, so the display is left alone.</string>
     <string name="refresh_reason_low_confidence">The frame rate was read from the file header, so only an exact match is used.</string>
+
+    <!-- Cadence and pacing diagnostics. "Cadence" describes how the display's rate relates to the
+         video's rate; "pacing" says whether anything was done about an uneven one. Neither claims
+         that a display's refresh rate changes how many frames a video contains. -->
+    <string name="pacing_cadence_label">Cadence: %1$s</string>
+    <string name="pacing_cadence_native">1:1</string>
+    <string name="pacing_cadence_integer">%1$d per frame</string>
+    <string name="pacing_cadence_pattern">%1$s (uneven)</string>
+    <string name="pacing_cadence_unresolved">uneven, no short pattern</string>
+    <string name="pacing_cadence_display_too_slow">display slower than source</string>
+    <string name="pacing_cadence_unknown">unknown</string>
+    <string name="pacing_cadence_uncertain">%1$s, frame rate uncertain</string>
+    <string name="pacing_mechanism_label">Pacing: %1$s</string>
+    <string name="pacing_mechanism_diagnostic_only">diagnostic only</string>
+    <string name="pacing_note_uneven_pattern">Frames are not held for equal times, so motion will not look perfectly even.</string>
+    <string name="pacing_note_unresolved">This pairing has no short repeating pattern, so the display drifts against the video.</string>
+    <string name="pacing_note_display_too_slow">The display refreshes slower than the video delivers frames.</string>
+    <string name="pacing_note_variable_frame_rate">This video changes its frame rate, so no fixed pattern describes it.</string>
+    <string name="pacing_note_request_refused">The display could not be moved to a rate that suits this cadence.</string>
 </resources>

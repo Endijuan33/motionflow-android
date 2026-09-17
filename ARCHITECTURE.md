@@ -23,6 +23,7 @@ extracted later, so extraction is a move rather than a redesign.
 | `core/designsystem/theme` | Design tokens and the theme application | Feature-specific styling, layout of screens |
 | `core/media/player` | The playback engine: how it is built, who owns it, how its state and failures are classified | Compose, screens, navigation |
 | `core/media/metadata` | Describing a media source: container, tracks, frame rate, colour, audio | Compose, playback, navigation |
+| `core/media/pacing` | Classifying the relationship between the video's cadence and the display's, and its diagnostics | Android, Media3, the player, Compose |
 | `core/media/refresh` | Deciding and applying display refresh-rate preferences: the policy, the coordinator, the seams | Compose, Android display APIs |
 | `core/media/refresh/android` | The only code that reads a display or sets a window attribute | Decision logic, Compose |
 | `core/media/session` | Publishing playback to Android through a media session service | UI, feature state |
@@ -40,7 +41,6 @@ phases have an agreed home, and so that no phase invents a competing structure:
 | --- | --- | --- |
 | `core/common` | when needed | Dispatchers, qualifiers, small shared primitives |
 | `core/foundation` | when needed | Process-wide services: result types, time source, capability reporting |
-| `core/media/framerate` | Phase 4 | Frame pacing, presentation timestamps, cadence matching |
 | `rendering` | Phase 5 | OpenGL ES / Vulkan surface and shader pipeline |
 | `interpolation` | Phase 6 | Interpolator contract, frame queueing, A/V sync |
 | `inference` | Phase 7 | ONNX Runtime / NCNN model loading and execution |
@@ -319,7 +319,78 @@ the automatic preference, or the screen attaching. There is no timer, no per-fra
 capability polling; recomputation is signalled through a flag, so a burst of inputs collapses into one
 decision for the latest state rather than a queue of stale requests.
 
-## 7. Design system
+## 7. Frame pacing engine
+
+```
+PlayerViewModel ──┬── FrameRateInfo            (metadata engine)
+                  │
+                  └── RefreshRateState          (refresh engine: what the display reports)
+                             │
+                             ▼
+                  FramePacingCoordinator ── FramePacingPolicy   (pure cadence analysis)
+                             │
+                             └── FramePacingController            (seam, unbound today)
+```
+
+### What each part owns
+
+| Part | Owns | Must not |
+| --- | --- | --- |
+| `FramePacingPolicy` | The classification: what the two rates are to each other, and what pattern of holds that implies | Touch Android, or apply anything |
+| `FramePacingCoordinator` | When to analyse, and handing a decision to a mechanism when one is bound | Know what a player or a display is |
+| `FramePacingController` | The seam a future renderer implements | Contain classification |
+
+The package imports nothing from Android, Media3 or the player: its only dependencies are the two
+cadence models, `kotlin.math` and coroutines. That is what keeps the arithmetic testable, and it is
+also a structural statement — this engine cannot reach into rendering even by accident.
+
+### The classification
+
+A mode fits when its rate is an integer multiple of the cadence, because that is what makes every
+frame equally long. Everything else is uneven, and the question is how uneven:
+
+| Relationship | Classification | What it means |
+| --- | --- | --- |
+| 1:1 | `NATIVE_CADENCE` | Every frame once |
+| Whole multiple | `INTEGER_MULTIPLE` | Every frame n times, evenly |
+| Short fraction (≤ 2 frames) | `CADENCE_MISMATCH` / `SHORT_REPEATING_PATTERN` | Holds of 3 and 2, repeating exactly (the 3:2 pattern) |
+| Longer fraction (≤ 8 frames) | `CADENCE_MISMATCH` / `LONG_REPEATING_PATTERN` | A repeating unit too long to read as a pulse |
+| No short fraction | `CADENCE_MISMATCH` / `UNRESOLVED_PATTERN` | The pairing drifts; 24 fps on 59.94 Hz slips a refresh every few seconds |
+| Ratio below 1 | `UNSUPPORTED` | The display cannot deliver every frame |
+
+There is no "fractionally compatible" outcome. A fractional relationship is never even, and the two
+cases such an outcome would separate — 24 fps on 60 Hz and 23.976 fps on 59.94 Hz — are the same
+ratio, exactly five refreshes to two frames. How regular the pattern is carried by the reason instead.
+
+The tolerance is `RefreshRatePolicy.RATIO_TOLERANCE`, referenced rather than restated, so a pair the
+refresh engine calls a whole multiple cannot be called a mismatch here. The boundary that matters is
+in the tests: 24.000 fps on a 59.94 Hz display is 2.4975, which is 0.1% from five-to-two and must not
+be described as the 3:2 pattern.
+
+### Why nothing is applied
+
+`FramePacingController` has no implementation, and that is the finding rather than an omission.
+
+Frame release happens inside `MediaCodecVideoRenderer`, which calls `releaseOutputBuffer` itself. The
+only app-facing hook, `VideoFrameMetadataListener`, receives the release time and cannot change it.
+Influencing *when* a frame is presented therefore requires a custom video renderer — replacing the
+rendering path this project deliberately left to Media3 — which is out of scope for this phase and
+for Phase 4's stated purpose of a *foundation* for later rendering work.
+
+The two things that can be done without a renderer are already done elsewhere: Media3's own
+`VideoFrameReleaseHelper` calls `Surface.setFrameRate` on API 30+ with `FIXED_SOURCE` semantics, and
+Phase 3 asks the platform for a suitable display mode. Repeating either here would be duplication, so
+the engine diagnoses and stops, and every decision reports `isApplied = false`.
+
+### Work happens only on a change
+
+Two inputs, each fed once per event: a cadence from the metadata engine, and the refresh engine's
+state. The coordinator conflates a burst into one analysis of the latest state, and identical inputs
+produce an identical value that the state flow does not re-emit. There is no timer, no per-frame
+work, and nothing in the UI layer participates in the analysis. A mechanism is only consulted for a
+cadence that actually needs pacing — a mismatch or an unsupported pairing.
+
+## 8. Design system
 
 The theme is the contract between design and code, so it is centralised from the start:
 
@@ -347,7 +418,7 @@ Design decisions worth keeping:
 - **Depth comes from tonal surfaces, not shadows.** Elevation stays low by design.
 - **Motion is short.** Chrome animates around moving pictures; the token scale caps at 400 ms.
 
-## 8. Build architecture
+## 9. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -370,11 +441,11 @@ Design decisions worth keeping:
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 9. Testing strategy
+## 10. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
-| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching, the whole refresh-rate matching policy and its coordinator |
+| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching, the refresh-rate matching policy and its coordinator, the cadence classification and its coordinator |
 | Android Lint | `:app:lintDebug`, every push | Correctness, API misuse, resource and manifest problems |
 | Instrumented tests | not wired up | Would cover surfaces, codecs, session binding and whether a display actually changes mode — CI has no emulator |
 
@@ -390,25 +461,29 @@ Both media engines are split so that their *decisions* are testable and their *I
 interval analysis, rate naming, unit scaling, error classification and the repository's caching policy
 are pure or fake-driven. Refresh rate: the matching policy is a pure function, and the coordinator is
 driven through fake controller and capability providers, so refusals, unknown capabilities and the
-lifecycle rules are all covered without a display. That is what the two interfaces are for.
+lifecycle rules are all covered without a display. That is what the two interfaces are for. Pacing
+needs no fakes for its arithmetic at all — it has no I/O — and its coordinator is driven by feeding it
+cadences and refresh states; a bound controller is faked to prove the seam.
 
-## 10. Deliberately absent
+## 11. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 
 - **Frame interpolation, inference runtimes, native code.** Phases 6 and 7. No stub interfaces are
   defined for them, because an interface written before the problem is understood is a liability.
-  Nothing in the refresh-rate engine implies they exist: it changes how often a frame is shown, not
-  how many frames there are.
-- **Frame pacing.** Phase 4. The display now moves to the content's cadence; nothing yet decides
-  *when* a frame is released, which is what removes the judder in the cases no mode can match.
-- **The surface-level frame-rate hint.** `Surface.setFrameRate` is not called. It expresses the same
-  thing as the window attribute the engine uses — AOSP documents that attribute as its equivalent —
-  but it needs the video `Surface`, whose lifetime belongs to `PlayerView`. Phase 5 owns a surface of
-  its own, which is where that hint, with `FRAME_RATE_COMPATIBILITY_FIXED_SOURCE` semantics, belongs.
+  Nothing in the pacing engine implies they exist: it decides when existing frames are shown, not how
+  many frames there are.
+- **Frame release control.** Pacing classifies cadences but cannot change presentation timing, because
+  release happens inside Media3's video renderer and the app-facing hook only reports it. The
+  classification and the `FramePacingController` seam are the foundation for whichever phase owns a
+  renderer; until then a 3:2 mismatch is identified, explained and left alone.
 - **A custom rendering pipeline.** Phase 5. `PlayerView` and Media3's default renderers are used
   deliberately: they are the correct, low-risk path, and the reference behaviour the custom pipeline
   will be judged against.
+- **Calling `Surface.setFrameRate` ourselves.** Not needed, and deliberately not done: Media3's
+  `VideoFrameReleaseHelper` already calls it on API 30+, with `FRAME_RATE_COMPATIBILITY_FIXED_SOURCE`
+  for a steady source and a change-frame-rate-only-if-seamless strategy. A second caller would
+  duplicate it.
 - **A settings store, and with it a persisted refresh-rate preference.** The player surface has an
   Auto/System-default toggle, but it lives for the session. Persisting one setting would mean
   inventing a settings architecture here; that arrives with the phase that needs it.

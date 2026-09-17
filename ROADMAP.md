@@ -135,20 +135,43 @@ frames there are.
 
 ---
 
-## Phase 4 — Frame Pacing Engine ⏳
+## Phase 4 — Frame Pacing Engine ✅
 
 **Goal:** remove judder caused by source cadence and panel cadence disagreeing.
 
-**Scope**
+**Delivered**
 
-- Presentation timestamp driven frame release.
-- Cadence matching (e.g. 3:2 pulldown selection for 24 fps on 60 Hz panels).
-- Drift correction against the audio clock.
+- A pure cadence classifier: 1:1, whole multiples, short repeating patterns (the 3:2 case), longer
+  repeating patterns, unresolved pairings that drift, and displays too slow for the source — with the
+  pattern of frame holds named ("3:2") rather than left implicit.
+- A documented tolerance, shared with the refresh engine so the two cannot disagree about a pair, with
+  its boundaries tested — including the pairing that matters most, 24.000 fps on a 59.94 Hz display,
+  which sits 0.1% from five-to-two and drifts.
+- A coordinator that re-analyses on a changed cadence or display state, conflates bursts, and does not
+  re-emit identical state. No timer, no per-frame work, no polling.
+- A `FramePacingController` seam and an explicit applied-or-not fact, so the diagnostics can say
+  "diagnostic only" as a statement about what happened rather than as a hedge.
+- Diagnostics on the player surface: the cadence, its pattern, whether the frame rate was reliable, an
+  explanation when the cadence needs one, and whether the display could not be moved to suit it.
+- 33 new unit tests (160 in total).
 
-**Exit criteria**
+**Exit criteria — met, with an explicit limit**
 
-- Frame drop and late-frame counters stay within budget over a 10-minute playback soak.
-- A/V sync drift stays under one frame over the same soak.
+- Every cadence relationship the phase brief lists is classified and covered by a test, including the
+  fractional pairings and the unknown, variable and low-confidence inputs.
+- *Limit:* **judder is not removed.** Frame release happens inside Media3's video renderer, the only
+  app-facing hook reports release times rather than accepting changes, and influencing presentation
+  timing would mean supplying a custom renderer — outside this phase, and outside its stated purpose as
+  a foundation for later rendering work. The phase therefore classifies and explains, applies nothing,
+  and says so. The two mechanisms that *can* affect presentation are already in place: Media3's own
+  `Surface.setFrameRate` call on API 30+, and Phase 3's display-mode request.
+- *Deviation from the brief:* there is no "fractionally compatible" outcome. A fractional cadence is
+  never even, and the brief's 24/60 and 23.976/59.94 rows are the *same ratio* — exactly 5 refreshes to
+  2 frames — so a classifier that is a function of the two rates must answer both the same way. What
+  those rows were reaching for, how long the repeating unit is, is carried by the reason instead.
+
+**Explicitly out of scope:** interpolating or synthesising frames, optical flow, motion estimation,
+custom shaders, and any claim that judder has been eliminated or that a display rate creates frames.
 
 ---
 
