@@ -7,51 +7,58 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 1 — Project Foundation ✅
+## Phase 0 — Project Foundation ✅
 
 **Goal:** a repository that builds reproducibly and a codebase the later phases can grow into.
 
-**Scope**
+**Delivered**
 
-- Gradle build with committed wrapper, pinned toolchain and a version catalog.
-- Dark-first Material 3 design system: colour, type, shape, spacing, elevation, motion tokens.
+- Gradle build with committed checksum-pinned wrapper, JDK toolchain and a version catalog.
+- Dark-first Material 3 design system: colour, type, shape, spacing, elevation, motion tokens, with
+  palette contrast asserted by unit tests.
 - Single-activity Compose application, edge-to-edge, with a real navigation graph.
 - Adaptive launcher icon (vector foreground/background, monochrome layer for themed icons).
 - CI that lints, unit tests, assembles a debug APK and uploads it as an artifact.
-- `README.md`, `ARCHITECTURE.md`, `ROADMAP.md`.
 
-**Exit criteria**
+**Exit criteria — met**
 
 - `./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug` succeeds from a clean checkout.
-- The debug APK launches and shows the branded placeholder screen.
-- Palette contrast guarantees and route hygiene are asserted by unit tests.
 - CI is green on the default branch and publishes the APK artifact.
-
-**Explicitly out of scope:** any playback, rendering, interpolation or inference work.
-
----
-
-## Phase 2 — Core Video Playback ⏳
-
-**Goal:** play a local video file, correctly, with lifecycle-safe surface handling.
-
-**Scope**
-
-- Media3/ExoPlayer integration behind a playback abstraction.
-- Playback state published to a `ViewModel` as `StateFlow`.
-- Surface hosting that survives configuration changes, backgrounding and surface destruction.
-- Media picker flow and the `feature/player` destination.
-- Audio focus handling and a media session.
-
-**Exit criteria**
-
-- A user can pick and play a local file; playback pauses on backgrounding and resumes correctly.
-- No surface or player leaks across configuration changes.
-- Playback state (position, duration, buffering, errors) is observable from the UI.
+- Palette contrast guarantees and route hygiene are asserted by unit tests.
 
 ---
 
-## Phase 3 — Video Metadata Detection ⏳
+## Phase 1 — Core Video Playback ✅
+
+**Goal:** play a local video file reliably, with playback owned outside the UI.
+
+**Delivered**
+
+- Media3 1.11.1 with the standard hardware-first decode pipeline; no decoder internals overridden.
+- A single `ExoPlayer` per process, created by a centralized factory and owned by a
+  `MediaSessionService`; the UI drives it through a `MediaController`.
+- Local media input through the Storage Access Framework, including `content://` URIs and refusal
+  of unsupported sources before they reach the player.
+- `StateFlow`-backed player state model and a Compose player surface: video stage, play/pause,
+  scrubber, position and duration, buffering indicator, error notice, back navigation, speed and
+  repeat controls, fullscreen-ready layout.
+- Playback failure classification into user-facing messages, with technical detail kept for logs.
+- Lifecycle safety: no player in the composition, deliberate release, playback that survives
+  configuration changes, and release of the session resources.
+- Unit tests for the state model, error mapping, route round-tripping and readout formatting.
+
+**Exit criteria — met**
+
+- A local file plays through hardware decode, driven entirely from the Compose surface.
+- Rotation and screen navigation do not create a second player, and the existing session is reused.
+- Failures (unsupported format, missing file, lost permission, decoder fault) show an explanation
+  instead of a crash.
+
+**Explicitly out of scope:** rendering pipelines, refresh-rate control, interpolation, inference.
+
+---
+
+## Phase 2 — Video Metadata Detection ⏳
 
 **Goal:** know exactly what is being played.
 
@@ -68,7 +75,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 4 — Display Refresh Rate Control ⏳
+## Phase 3 — Display Refresh Rate Control ⏳
 
 **Goal:** make the display's refresh rate a first-class, observable input.
 
@@ -86,7 +93,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 5 — Frame Pacing Engine ⏳
+## Phase 4 — Frame Pacing Engine ⏳
 
 **Goal:** remove judder caused by source cadence and panel cadence disagreeing.
 
@@ -103,7 +110,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 6 — GPU Rendering Pipeline ⏳
+## Phase 5 — GPU Rendering Pipeline ⏳
 
 **Goal:** own the path from decoded frames to the display.
 
@@ -112,6 +119,8 @@ each has an exit criterion that can be checked rather than argued about.
 - OpenGL ES render path with a Vulkan path behind the same abstraction.
 - Surface, texture and colour-space handling, including HDR transfer functions.
 - Shader-based scaling and pixel format conversion.
+- Replaces the `PlayerView` stage in the player surface and the renderer configuration in the player
+  factory — the two seams Phase 1 exists to provide.
 
 **Exit criteria**
 
@@ -120,7 +129,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 7 — Frame Interpolation Architecture ⏳
+## Phase 6 — Frame Interpolation Architecture ⏳
 
 **Goal:** the plumbing that interpolation needs, independent of any particular model.
 
@@ -137,7 +146,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 8 — AI-Based Interpolation ⏳
+## Phase 7 — AI-Based Interpolation ⏳
 
 **Goal:** real quality interpolation on device.
 
@@ -154,7 +163,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 9 — Adaptive Performance Management ⏳
+## Phase 8 — Adaptive Performance Management ⏳
 
 **Goal:** stay smooth and cool for the whole film, not the first five minutes.
 
@@ -171,7 +180,7 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 10 — Production Hardening and Release ⏳
+## Phase 9 — Production Hardening and Release ⏳
 
 **Goal:** ship it.
 
@@ -181,6 +190,7 @@ each has an exit criterion that can be checked rather than argued about.
 - R8 rules, baseline profiles, startup and frame-time profiling.
 - Release signing, versioning and Play Store release track.
 - Crash and ANR reporting with opt-out.
+- Media library: persistence of played items and URI grants, queue and playback resumption.
 
 **Exit criteria**
 

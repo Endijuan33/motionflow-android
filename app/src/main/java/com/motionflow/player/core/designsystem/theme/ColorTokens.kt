@@ -61,4 +61,8 @@ internal object MotionFlowColorTokens {
     const val INVERSE_PRIMARY: Long = 0xFF00688A
 
     const val SCRIM: Long = 0xFF000000
+
+    // Video letterbox. True black rather than the deepest surface token, so the bars match the
+    // black of the picture itself and OLED panels can switch those pixels off entirely.
+    const val VIDEO_SURFACE: Long = 0xFF000000
 }

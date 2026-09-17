@@ -5,6 +5,11 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 
 /**
+ * The colour the player letterboxes video against.
+ */
+internal val MotionFlowVideoSurface = Color(MotionFlowColorTokens.VIDEO_SURFACE)
+
+/**
  * The dark colour scheme used by every MotionFlow surface.
  *
  * MotionFlow is dark-first because its primary purpose is video playback: a dark chrome keeps

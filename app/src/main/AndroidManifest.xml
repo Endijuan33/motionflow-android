@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Media3 runs playback in a foreground service while the media session is active. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Required from API 33 to display the media notification. Playback itself does not
+         depend on it: if the user declines, the session keeps running silently. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".MotionFlowApplication"
         android:icon="@mipmap/ic_launcher"
@@ -11,12 +18,25 @@
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Owns the single ExoPlayer instance for the process and exposes it to Android system
+             media controls. Declared as an exported MediaSessionService so the platform (media
+             buttons, Bluetooth, system UI) can bind to it. -->
+        <service
+            android:name=".core.media.session.MotionFlowMediaSessionService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
 
     </application>
 

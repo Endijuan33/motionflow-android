@@ -30,21 +30,24 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 0 — Foundation Initialization.**
+**Phase 1 — Core Video Playback. Complete.**
 
-This repository currently contains the project foundation only. There is deliberately no playback,
-no rendering pipeline, no frame interpolation and no media permissions yet. What exists is the part
-that is expensive to retrofit later:
+The application plays a local video end to end: pick a file from the system document picker, and it
+is decoded by hardware, rendered through Media3's standard surface pipeline, and driven by a Compose
+control deck backed by a `StateFlow` state model. Playback lives in a `MediaSessionService`, so it
+survives configuration changes, is exposed to Android's media controls, and cannot be duplicated or
+leaked by the UI.
 
-- A reproducible Gradle build (wrapper committed, versions pinned in a version catalog).
-- A dark-first Material 3 design system with centralised colour, type, shape, spacing, elevation
-  and motion tokens.
-- A single-activity, state-driven Compose application with a real navigation graph.
-- An adaptive launcher icon shipped as vector layers.
-- A CI pipeline that lints, unit tests, assembles and publishes a debug APK on every push.
+What exists now:
 
-The placeholder home screen reports the build version and links to an empty settings destination.
-Both are replaced as the phases below land.
+- **Phase 0** — reproducible Gradle build, dark-first Material 3 design system, Compose navigation,
+  adaptive launcher icon, CI that lints, tests, assembles and publishes a debug APK.
+- **Phase 1** — Media3 ExoPlayer playback: centralized player factory and ownership, media session,
+  local media opening through the Storage Access Framework, player state model, player UI, error
+  classification, lifecycle and resource management.
+
+Explicitly **not** implemented yet: frame interpolation, AI models, optical flow, OpenGL/Vulkan
+rendering, custom GPU processing, refresh-rate forcing and FPS conversion. Those are later phases.
 
 ## Technology Stack
 
@@ -53,6 +56,7 @@ Both are replaced as the phases below land.
 | Language | Kotlin | 2.3.21 |
 | Build | Android Gradle Plugin / Gradle | 9.4.0 / 9.7.1 |
 | UI | Jetpack Compose (BOM) + Material 3 | 2026.06.01 |
+| Playback | AndroidX Media3 (ExoPlayer, Session, UI) | 1.11.1 |
 | Architecture | AndroidX Lifecycle (ViewModel, `StateFlow`) | 2.10.0 |
 | Navigation | Navigation Compose | 2.9.8 |
 | Concurrency | Kotlin Coroutines | 1.11.0 |
@@ -84,9 +88,15 @@ already in place:
 app/src/main/java/com/motionflow/player/
 ├── MotionFlowApplication.kt      process entry point
 ├── MainActivity.kt               single activity, edge-to-edge, hosts the graph
-├── core/designsystem/theme/      colour, type, shape, spacing, elevation, motion tokens
-├── feature/home/                 home destination (state holder + screen)
-├── feature/settings/             settings destination (placeholder)
+├── core/
+│   ├── designsystem/theme/       colour, type, shape, spacing, elevation, motion tokens
+│   └── media/
+│       ├── player/               player engine: factory, ownership, state and error mapping
+│       └── session/              media session service
+├── feature/
+│   ├── home/                     home destination (state holder + picker + screen)
+│   ├── player/                   player destination (state, view model, route, screen)
+│   └── settings/                 settings destination (placeholder)
 └── navigation/                   destinations and the navigation graph
 ```
 
@@ -97,12 +107,30 @@ Rules the code follows:
 - **Stateful/stateless split.** Each destination has a thin stateful entry point and a pure,
   previewable `*Content` composable.
 - **Destinations receive lambdas, not controllers.** Feature code never sees the `NavHostController`.
+- **The UI never owns the player.** Playback is owned by the session service; the screen drives it
+  through a `MediaController`.
 - **Tokens, not literals.** Colours, spacing, shapes and durations come from the design system.
 - **Dark first, light ready.** The palette is framework-independent ARGB, so a light scheme is a
   mapping away rather than a rewrite.
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full rationale, the reserved packages, and the
-rules for adding modules.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full rationale, the media pipeline, the reserved
+packages, and the rules for adding modules.
+
+## Opening a local video
+
+```
+Home (Open Video)
+  → Android system document picker      (Storage Access Framework)
+  → document URI with a read grant
+  → percent-encoded into the player route
+  → Player destination                   (MediaController → MediaSessionService → ExoPlayer)
+  → hardware decode, render, playback
+```
+
+The picker returns a `content://` document URI, never a filesystem path, and MotionFlow never
+assumes one: Media3 opens it through its content data source, and the file's display name is read
+from the document provider purely as a label. Sources that are neither `content://` nor `file://`
+are refused before they reach the player.
 
 ## Build Instructions
 
@@ -141,18 +169,32 @@ resolves Gradle itself.
 
 | # | Phase | Outcome |
 | --- | --- | --- |
-| 1 | **Project Foundation** | Reproducible build, design system, navigation, CI. **← this phase** |
-| 2 | Core Video Playback | Media3/ExoPlayer playback, lifecycle-correct surface handling |
-| 3 | Video Metadata Detection | Container, codec, frame rate and cadence detection via MediaExtractor/MediaCodec |
-| 4 | Display Refresh Rate Control | Read supported modes and request a matching refresh rate |
-| 5 | Frame Pacing Engine | Align frame release with presentation timestamps to remove judder |
-| 6 | GPU Rendering Pipeline | OpenGL ES / Vulkan render path with a native surface |
-| 7 | Frame Interpolation Architecture | Pluggable interpolator contract, frame queueing, A/V sync |
-| 8 | AI-Based Interpolation | RIFE-class models via ONNX Runtime or NCNN, with thermal-aware fallbacks |
-| 9 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
-| 10 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
+| 0 | **Project Foundation** | Reproducible build, design system, navigation, CI. **✅ complete** |
+| 1 | **Core Video Playback** | Media3 playback, media session, local media flow, player UI. **✅ complete** |
+| 2 | Video Metadata Detection | Container, codec, frame rate and cadence detection |
+| 3 | Display Refresh Rate Control | Read supported modes and request a matching refresh rate |
+| 4 | Frame Pacing Engine | Align frame release with presentation timestamps to remove judder |
+| 5 | GPU Rendering Pipeline | OpenGL ES / Vulkan render path with a native surface |
+| 6 | Frame Interpolation Architecture | Pluggable interpolator contract, frame queueing, A/V sync |
+| 7 | AI-Based Interpolation | RIFE-class models via ONNX Runtime or NCNN, with thermal-aware fallbacks |
+| 8 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
+| 9 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
 
 [`ROADMAP.md`](ROADMAP.md) tracks scope and exit criteria per phase.
+
+## Known Limitations
+
+- **Playback speed and repeat mode are the only tunables.** No aspect-ratio or fullscreen control
+  yet; the layout is built so that fullscreen is a rearrangement rather than a rewrite.
+- **Leaving the player screen pauses playback.** Backgrounding the application keeps it playing,
+  controlled from the media notification. Keeping a video running after navigating away needs a
+  "now playing" affordance on Home, which arrives with the media library.
+- **Media notification visibility depends on the notification permission** on Android 13+. It is
+  requested when the player opens; playback works either way.
+- **No instrumented tests.** CI has no emulator, so everything device-dependent — surface handling,
+  codec selection, session binding — is unverified by the pipeline and must be checked on hardware.
+- **Single file playback.** There is no library, queue or history; grants are not persisted across
+  process death.
 
 ## Engineering Principles
 

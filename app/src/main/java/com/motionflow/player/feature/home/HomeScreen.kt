@@ -1,5 +1,7 @@
 package com.motionflow.player.feature.home
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,20 +25,30 @@ import com.motionflow.player.R
 import com.motionflow.player.core.designsystem.theme.MotionFlowTheme
 
 /**
- * Branded placeholder for the home destination.
+ * Home destination.
  *
- * It is replaced by the media library and player surfaces in the playback phases.
+ * For this phase it is a branded entry point whose one real job is starting the local media flow.
+ * It is replaced by the media library surface later.
  */
 @Composable
 fun HomeScreen(
+    onOpenVideo: (String) -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
+    // The system document picker is the only way media enters MotionFlow. It returns a document
+    // URI with a read grant, never a filesystem path, so nothing downstream may assume a path.
+    val openDocument = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri -> uri?.let { onOpenVideo(it.toString()) } },
+    )
+
     HomeContent(
         uiState = uiState,
+        onOpenVideoClick = { openDocument.launch(VIDEO_MIME_TYPES) },
         onOpenSettings = onOpenSettings,
         modifier = modifier,
     )
@@ -44,6 +57,7 @@ fun HomeScreen(
 @Composable
 private fun HomeContent(
     uiState: HomeUiState,
+    onOpenVideoClick: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -83,6 +97,13 @@ private fun HomeContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.height(MotionFlowTheme.spacing.large))
+        Button(onClick = onOpenVideoClick) {
+            Text(
+                text = stringResource(R.string.home_open_video_action),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        Spacer(modifier = Modifier.height(MotionFlowTheme.spacing.small))
         TextButton(onClick = onOpenSettings) {
             Text(
                 text = stringResource(R.string.home_settings_action),
@@ -92,12 +113,21 @@ private fun HomeContent(
     }
 }
 
+/** Common container types, offered explicitly so the picker filters to playable documents. */
+private val VIDEO_MIME_TYPES = arrayOf(
+    "video/*",
+    "video/mp4",
+    "video/x-matroska",
+    "video/webm",
+)
+
 @Preview(name = "Home", showBackground = true, backgroundColor = 0xFF08090C)
 @Composable
 private fun HomeContentPreview() {
     MotionFlowTheme {
         HomeContent(
             uiState = HomeUiState(versionName = "0.1.0", versionCode = 1),
+            onOpenVideoClick = {},
             onOpenSettings = {},
         )
     }

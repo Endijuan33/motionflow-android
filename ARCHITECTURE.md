@@ -21,28 +21,29 @@ extracted later, so extraction is a move rather than a redesign.
 | --- | --- | --- |
 | `com.motionflow.player` | Process entry point, single activity, application-level Compose host | Feature UI, business rules |
 | `core/designsystem/theme` | Design tokens and the theme application | Feature-specific styling, layout of screens |
-| `feature/home` | Home destination state and UI | Navigation graph knowledge |
+| `core/media/player` | The playback engine: how it is built, who owns it, how its state and failures are classified | Compose, screens, navigation |
+| `core/media/session` | Publishing playback to Android through a media session service | UI, feature state |
+| `feature/home` | Home destination state and UI, including the media picker | Navigation graph knowledge |
+| `feature/player` | Player destination: playback state, route and screen | Creating or releasing players |
 | `feature/settings` | Settings destination UI | Navigation graph knowledge |
 | `navigation` | Destination identities and the graph | Feature UI internals, business rules |
 
 ### Reserved packages
 
-These directories do not exist yet because they would be empty. They are named here so that phases 2
-onwards have an agreed home, and so that no phase invents a competing structure:
+These directories do not exist yet because they would be empty. They are named here so that later
+phases have an agreed home, and so that no phase invents a competing structure:
 
 | Reserved package (or module) | Arrives with | Responsibility |
 | --- | --- | --- |
 | `core/common` | 2 | Dispatchers, qualifiers, small shared primitives |
 | `core/foundation` | 2 | Process-wide services: result types, time source, capability reporting |
-| `feature/player` | 2 | Playback destination: transport controls, surface hosting, playback state |
-| `media` | 2 | Media3/ExoPlayer integration, source resolution, playback lifecycle |
-| `metadata` | 3 | Container/codec/frame-rate and cadence detection |
-| `display` | 4 | Display mode enumeration and refresh-rate requests |
-| `framerate` | 5 | Frame pacing, presentation timestamps, cadence matching |
-| `rendering` | 6 | OpenGL ES / Vulkan surface and shader pipeline |
-| `interpolation` | 7 | Interpolator contract, frame queueing, A/V sync |
-| `inference` | 8 | ONNX Runtime / NCNN model loading and execution |
-| `performance` | 9 | Thermal and battery adaptation |
+| `core/media/metadata` | 2 | Container/codec/frame-rate and cadence detection |
+| `core/media/display` | 3 | Display mode enumeration and refresh-rate requests |
+| `core/media/framerate` | 4 | Frame pacing, presentation timestamps, cadence matching |
+| `rendering` | 5 | OpenGL ES / Vulkan surface and shader pipeline |
+| `interpolation` | 6 | Interpolator contract, frame queueing, A/V sync |
+| `inference` | 7 | ONNX Runtime / NCNN model loading and execution |
+| `performance` | 8 | Thermal and battery adaptation |
 
 ## 2. Layering and dependency rules
 
@@ -51,7 +52,7 @@ onwards have an agreed home, and so that no phase invents a competing structure:
             │                    │
             └────────┬───────────┘
                      ▼
-        core/designsystem
+        core/designsystem, core/media
                      │
                      ▼
         core/common, core/foundation
@@ -59,12 +60,15 @@ onwards have an agreed home, and so that no phase invents a competing structure:
 
 1. **Features depend on `core`, never on each other.** Two features that need the same thing push it
    down into `core`, or communicate through the navigation layer.
-2. **`core` never depends on a feature.** A design token must not know what a player is.
-3. **Only `navigation` knows the graph.** Destinations accept lambdas (`onOpenSettings`,
+2. **`core` never depends on a feature.** A design token must not know what a player is, and the
+   playback engine must not know that a player screen exists.
+3. **Only `navigation` knows the graph.** Destinations accept lambdas (`onOpenVideo`,
    `onNavigateBack`) so screens stay previewable and testable in isolation.
 4. **One direction of state.** Data flows down as immutable state, events flow up as lambdas.
 5. **No Android framework types in `core/designsystem`.** Tokens are plain values; only the theme
    application touches Compose.
+6. **`core/media/player` stays free of Compose.** It is the playback domain: it may be driven by a
+   service, a test or a future headless component, none of which should depend on a UI toolkit.
 
 ## 3. Application structure
 
@@ -99,7 +103,75 @@ them to composables. String routes are used because they are the API that naviga
 guarantees today. When type-safe routes become the default, only `navigation/` changes — destinations
 already receive lambdas, so features are unaffected.
 
-## 4. Design system
+The player destination carries its media source as a route argument rather than as shared mutable
+state, so the destination is reproducible and survives process death. A media URI cannot travel as a
+path segment unchanged — it contains `/`, `:` and `%` — so `PlayerRoute` percent-encodes it and
+Navigation decodes it once when the destination is created. That round trip is asserted by unit
+tests, because a source that does not survive it builds fine and fails only as unplayable media.
+
+## 4. Playback pipeline
+
+```
+PlayerScreen ── PlayerViewModel ── MediaController
+                                        │  (binder connection)
+                                        ▼
+                        MotionFlowMediaSessionService
+                                        │  owns exactly one
+                                        ▼
+                        MotionFlowPlayer → PlayerFactory → ExoPlayer
+                                                                │
+                                                    PlayerView (SurfaceView)
+```
+
+### Ownership
+
+Playback belongs to the process, not to a screen. `MotionFlowMediaSessionService` creates one
+`MotionFlowPlayer` in `onCreate` and releases it in `onDestroy`; no other component constructs a
+player. Because the session outlives the UI, a configuration change or a trip back to Home tears
+down and rebuilds the screen while the engine and its decoded buffers carry on — and a second player
+can never be created by navigating.
+
+The UI reaches the engine through a `MediaController`, a `Player` implementation that proxies across
+the session binder. That is why `feature/player` never imports `ExoPlayer`: the screen could not
+create a player even by accident.
+
+### Configuration
+
+`PlayerFactory` is the only place that decides how media is decoded and rendered. It leaves Media3's
+standard pipeline in place, which means `MediaCodec`-backed hardware decoders are chosen per track
+with an automatic software fallback (`setEnableDecoderFallback(true)`) when a hardware decoder is
+absent or fails to initialise. No codec selection is overridden and no decoder internals are touched.
+Load control is tuned for local files — a smaller minimum buffer than the streaming default — and
+audio focus plus "become noisy" handling are left to the player.
+
+### Lifecycle policy
+
+| Event | Behaviour |
+| --- | --- |
+| Configuration change | Screen and controller are rebuilt; the session and playback continue |
+| Leaving the player screen | `onCleared` pauses playback and releases the controller connection |
+| Backgrounding the app | Playback continues, controlled from the media notification |
+| Task removed while idle | The service stops itself (`onTaskRemoved`) and releases the player |
+| Process death | Nothing survives; the route can be restored, the grant cannot |
+
+`MotionFlowPlayer` is deliberately thin — it creates the engine and releases it. The abstraction is
+worth its two lines because it is the boundary that a custom rendering pipeline replaces: swap the
+renderers factory inside `PlayerFactory`, or replace the engine wholesale, and nothing in
+`core/media/session`, `feature/player` or `navigation` changes.
+
+### State and failures
+
+`PlayerViewModel` translates engine callbacks into an immutable `PlayerUiState` published as a
+`StateFlow`. Position is polled at the seek bar's resolution rather than pushed on every frame, and
+because a `StateFlow` drops unchanged values a paused player costs no recomposition. The screen is
+split so that a position tick invalidates the progress readout, not the video surface.
+
+Playback errors are classified once, in `PlayerError`, into the seven things a person can act on
+(missing file, lost permission, unsupported format, decoder fault, unreadable file, unsupported
+source, generic failure) plus a technical detail that goes to logcat and never to the screen.
+Media paths are not logged: a URI identifies what someone is watching.
+
+## 5. Design system
 
 The theme is the contract between design and code, so it is centralised from the start:
 
@@ -127,7 +199,7 @@ Design decisions worth keeping:
 - **Depth comes from tonal surfaces, not shadows.** Elevation stays low by design.
 - **Motion is short.** Chrome animates around moving pictures; the token scale caps at 400 ms.
 
-## 5. Build architecture
+## 6. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -143,31 +215,46 @@ Design decisions worth keeping:
   rather than one at a time.
 - **Reproducibility:** the Gradle wrapper is committed and pinned by version and SHA-256, Java is
   pinned by toolchain, and CI builds from a clean checkout with no developer-specific configuration.
+- **Media3 is pinned to `media3-common`/`exoplayer`/`session`/`ui` at one version.** The artifacts are
+  released together and are not independently versioned in practice, so they move as a set. Only
+  `media3-ui` is used for `PlayerView`; no ExoPlayer extensions (network stacks, decoders, cast) are
+  declared, because local playback does not need them.
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 6. Testing strategy
+## 7. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
-| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route hygiene, pure logic |
+| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, readout formatting |
 | Android Lint | `:app:lintDebug`, every push | Correctness, API misuse, resource and manifest problems |
-| Instrumented tests | not wired up yet | Added with the first phase that renders real content |
+| Instrumented tests | not wired up | Would cover surfaces, codecs and session binding — CI has no emulator |
 
 The rule for this repository: **test what does not need a device, and test what will silently break.**
-Design tokens and navigation identities are hand written and easy to corrupt, so they are asserted
-now. Feature behaviour is tested as it lands.
+Design tokens, hand-written mappings and the media-URI route round trip all fail quietly at runtime,
+so they are asserted. Playback policy is deliberately *not* covered by fake player tests: a mock
+`Player` would assert that the code calls the methods it visibly calls, while the behaviour that
+matters — hardware decode selection, surface lifetime, session binding — is device-dependent and is
+verified on hardware instead.
 
-## 7. Deliberately absent
+## 8. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 
-- **Playback.** No Media3, no `MediaCodec`, no media permissions. Phase 2.
-- **Frame interpolation, inference runtimes, native code.** Phases 7 and 8. No stub interfaces are
+- **Frame interpolation, inference runtimes, native code.** Phases 6 and 7. No stub interfaces are
   defined for them, because an interface written before the problem is understood is a liability.
+- **Refresh-rate control and frame pacing.** Phases 3 and 4. The player is left on the platform's
+  default display handling so that later measurements have a clean baseline to compare against.
+- **A custom rendering pipeline.** Phase 5. `PlayerView` and Media3's default renderers are used
+  deliberately: they are the correct, low-risk path for this phase and the reference behaviour the
+  custom pipeline will be judged against.
+- **Media library, queue, history and persisted URI grants.** Phase 9. Playback is single-file, and
+  grants are not persisted across process death.
+- **Fullscreen and aspect-ratio controls.** The player layout already separates the video stage from
+  the chrome, so fullscreen is a rearrangement of existing pieces rather than a rewrite.
 - **Density-specific raster icons.** `minSdk` is 26, so adaptive vector icons resolve everywhere; PNG
   mipmaps would be dead weight that drifts from the vector source.
-- **A DI framework.** Nothing needs injection yet. Composition and constructor parameters are
-  sufficient until the media graph arrives.
+- **A DI framework.** Nothing needs injection yet. Composition, constructor parameters and the
+  Android view model factory are sufficient until the media graph arrives.
 - **Formatting plugins (ktlint/Spotless).** Android Lint is the enforced quality gate; a second
   formatter is added when a shared style config is actually needed.
