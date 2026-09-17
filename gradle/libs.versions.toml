@@ -5,11 +5,17 @@ agp = "9.4.0"
 kotlin = "2.3.21"
 
 # AndroidX / Compose. Compose artifacts are versioned by the BOM.
-composeBom = "2026.09.00"
-androidxCore = "1.19.0"
+#
+# These are the newest releases whose AAR metadata still permits compileSdk 36. The next
+# releases of core, lifecycle, navigation and the Compose BOM declare minCompileSdk 37, and
+# platform 37 is only published on the SDK canary channel, so adopting them would mean
+# building against a preview platform. Raise these pins together with compileSdk once
+# platform 37 reaches the stable channel.
+composeBom = "2026.06.01"
+androidxCore = "1.18.0"
 androidxActivity = "1.13.0"
-androidxLifecycle = "2.11.0"
-androidxNavigation = "2.10.1"
+androidxLifecycle = "2.10.0"
+androidxNavigation = "2.9.8"
 kotlinxCoroutines = "1.11.0"
 
 # Testing.

@@ -136,6 +136,11 @@ Design decisions worth keeping:
   through the `kotlin { compilerOptions { } }` DSL rather than the removed `android.kotlinOptions`.
 - **SDK levels:** `compileSdk` and `targetSdk` are pinned to the latest **stable** platform (36).
   Preview platforms are not adopted.
+- **AndroidX pins are bounded by `compileSdk`.** AndroidX AAR metadata declares a `minCompileSdk`,
+  and the newest `core`/`lifecycle`/`navigation`/Compose releases require 37 — a level still on the
+  SDK canary channel. The catalog therefore pins the newest releases that compile against 36, and
+  the constraint is documented next to those pins so the next contributor raises them as a set
+  rather than one at a time.
 - **Reproducibility:** the Gradle wrapper is committed and pinned by version and SHA-256, Java is
   pinned by toolchain, and CI builds from a clean checkout with no developer-specific configuration.
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is

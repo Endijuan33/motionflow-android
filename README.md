@@ -52,17 +52,24 @@ Both are replaced as the phases below land.
 | --- | --- | --- |
 | Language | Kotlin | 2.3.21 |
 | Build | Android Gradle Plugin / Gradle | 9.4.0 / 9.7.1 |
-| UI | Jetpack Compose (BOM) + Material 3 | 2026.09.00 |
-| Architecture | AndroidX Lifecycle (ViewModel, `StateFlow`) | 2.11.0 |
-| Navigation | Navigation Compose | 2.10.1 |
+| UI | Jetpack Compose (BOM) + Material 3 | 2026.06.01 |
+| Architecture | AndroidX Lifecycle (ViewModel, `StateFlow`) | 2.10.0 |
+| Navigation | Navigation Compose | 2.9.8 |
 | Concurrency | Kotlin Coroutines | 1.11.0 |
 | Compose host | Activity Compose | 1.13.0 |
-| Support | AndroidX Core KTX | 1.19.0 |
+| Support | AndroidX Core KTX | 1.18.0 |
 | SDK levels | `minSdk` / `compileSdk` / `targetSdk` | 26 / 36 / 36 |
 | JDK | Java toolchain and `jvmTarget` | 17 |
 
 Dependency versions live in [`gradle/libs.versions.toml`](gradle/libs.versions.toml). Nothing is
 added to that catalog until the phase that uses it.
+
+> **Why AndroidX is not on its newest release.** The newest `core`, `lifecycle`, `navigation` and
+> Compose releases declare `minCompileSdk 37` in their AAR metadata. Platform 37 is published only
+> on the SDK canary channel, so building against it would mean depending on a preview platform
+> contrary to the stable-only rule. The pins above are the newest releases that compile against the
+> latest **stable** platform (36); they move up together with `compileSdk` once platform 37 is
+> stable.
 
 **Kotlin is compiled by the Android Gradle Plugin's built-in Kotlin support.** AGP 9 compiles
 Kotlin sources directly, so the `org.jetbrains.kotlin.android` plugin is intentionally absent; the
