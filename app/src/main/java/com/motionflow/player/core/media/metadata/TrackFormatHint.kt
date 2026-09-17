@@ -82,8 +82,10 @@ data class TrackFormatHint(
  *
  * Written against the framework's `MediaFormat` constants because Media3's colour constants are
  * aliases of exactly these values, so one mapping serves both the parsed-format and the
- * container-header paths.
+ * container-header paths. `ColorInfo` itself is part of Media3's unstable surface, which is why the
+ * opt-in sits here and not on the model.
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 internal fun toHdrInfo(colorInfo: ColorInfo?): HdrInfo? {
     if (colorInfo == null) return null
     return toHdrInfo(
