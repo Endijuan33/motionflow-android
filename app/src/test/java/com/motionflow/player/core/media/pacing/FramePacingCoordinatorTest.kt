@@ -182,11 +182,26 @@ class FramePacingCoordinatorTest {
             )
 
             controller.refuse = true
-            coordinator.onRefreshRateState(displayAt(120f))
+            // 50 Hz for 24 fps has no short pattern, so there is something to pace and the mechanism
+            // is consulted again — and refuses.
+            coordinator.onRefreshRateState(displayAt(50f))
 
+            assertEquals(2, controller.decisions.size)
             assertEquals(FramePacingError.PLATFORM_REJECTED, coordinator.state.value.decision.error)
             assertFalse(coordinator.state.value.decision.isApplied)
         }
+
+    @Test
+    fun `a cadence the display already matches is not handed to a mechanism`() = runTest(UnconfinedTestDispatcher()) {
+        val controller = FakeController()
+        val coordinator = FramePacingCoordinator(backgroundScope, controller)
+
+        coordinator.onVideoFrameRate(measuredFps(24f))
+        coordinator.onRefreshRateState(displayAt(120f))
+
+        assertEquals("a whole multiple needs no pacing", 0, controller.decisions.size)
+        assertEquals(FramePacingMode.INTEGER_MULTIPLE, coordinator.state.value.decision.mode)
+    }
 
     @Test
     fun `a controller that throws is treated as a refusal`() = runTest(UnconfinedTestDispatcher()) {
