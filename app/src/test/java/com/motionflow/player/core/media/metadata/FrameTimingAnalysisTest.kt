@@ -17,9 +17,9 @@ class FrameTimingAnalysisTest {
 
     @Test
     fun `uniform intervals produce the rate they encode`() {
-        val timing = analyseFrameTiming(uniformIntervals(120, 41_708L))
+        val timing = requireNotNull(analyseFrameTiming(uniformIntervals(120, 41_708L)))
 
-        assertEquals(23.976f, timing!!.fps, 0.01f)
+        assertEquals(23.976f, timing.fps, 0.01f)
         assertEquals(120, timing.intervalCount)
         assertFalse(timing.isVariableInWindow)
         assertEquals("23.976", KnownFrameRate.nearest(timing.fps)?.label)
@@ -32,18 +32,18 @@ class FrameTimingAnalysisTest {
         // interval would report 24 or 23, and the dither must not be mistaken for variability.
         val intervals = ditheredMsIntervals(frameCount = 240, fps = 23.976)
 
-        val timing = analyseFrameTiming(intervals)
+        val timing = requireNotNull(analyseFrameTiming(intervals))
 
-        assertEquals(23.976f, timing!!.fps, 0.01f)
+        assertEquals(23.976f, timing.fps, 0.01f)
         assertFalse("dithered timestamps are not a variable frame rate", timing.isVariableInWindow)
         assertEquals("23.976", KnownFrameRate.nearest(timing.fps)?.label)
     }
 
     @Test
     fun `a 29_97 source is not rounded to 30`() {
-        val timing = analyseFrameTiming(ditheredMsIntervals(frameCount = 240, fps = 29.97))
+        val timing = requireNotNull(analyseFrameTiming(ditheredMsIntervals(frameCount = 240, fps = 29.97)))
 
-        assertEquals(29.97f, timing!!.fps, 0.01f)
+        assertEquals(29.97f, timing.fps, 0.01f)
         assertEquals("29.97", KnownFrameRate.nearest(timing.fps)?.label)
     }
 
@@ -51,18 +51,18 @@ class FrameTimingAnalysisTest {
     fun `mixed frame rates in one window are reported as variable`() {
         val intervals = List(60) { 41_708L } + List(60) { 83_416L }
 
-        val timing = analyseFrameTiming(intervals)
+        val timing = requireNotNull(analyseFrameTiming(intervals))
 
-        assertTrue("a window holding two different cadences is variable", timing!!.isVariableInWindow)
+        assertTrue("a window holding two different cadences is variable", timing.isVariableInWindow)
     }
 
     @Test
     fun `a single stream discontinuity does not move the rate or fake variability`() {
         val intervals = List(100) { 41_708L }.toMutableList().apply { add(4, 5_000_000L) }
 
-        val timing = analyseFrameTiming(intervals)
+        val timing = requireNotNull(analyseFrameTiming(intervals))
 
-        assertEquals(23.976f, timing!!.fps, 0.01f)
+        assertEquals(23.976f, timing.fps, 0.01f)
         assertFalse("a gap is not a changed cadence", timing.isVariableInWindow)
     }
 
@@ -80,10 +80,10 @@ class FrameTimingAnalysisTest {
 
     @Test
     fun `an unusually slow but steady rate is still a rate`() {
-        val timing = analyseFrameTiming(uniformIntervals(30, 1_000_000L / 5))
+        val timing = requireNotNull(analyseFrameTiming(uniformIntervals(30, 200_000L)))
 
-        assertEquals(5f, timing!!.fps, 0.01f)
-        assertEquals(null, KnownFrameRate.nearest(timing.fps))
+        assertEquals(5f, timing.fps, 0.01f)
+        assertNull(KnownFrameRate.nearest(timing.fps))
     }
 
     private fun uniformIntervals(count: Int, intervalUs: Long): List<Long> = List(count) { intervalUs }

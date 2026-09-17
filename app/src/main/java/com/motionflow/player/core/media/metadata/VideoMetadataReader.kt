@@ -242,8 +242,9 @@ class AndroidVideoMetadataReader(private val context: Context) : VideoMetadataRe
             decoderName = container?.decoderName,
             bitrateBitsPerSecond = hint?.bitrateBitsPerSecond
                 ?: format?.intOrNull(MediaFormat.KEY_BIT_RATE).positiveOrNull(),
-            pixelWidthHeightRatio = hint?.pixelWidthHeightRatio
-                ?: format?.floatOrNull(MediaFormat.KEY_PIXEL_ASPECT_RATIO).positiveOrNull(),
+            // Pixel aspect ratio is not exposed by the framework's track headers; only Media3's
+            // parsed format carries it.
+            pixelWidthHeightRatio = hint?.pixelWidthHeightRatio,
             color = hint?.color ?: format?.let(::colorOfFormat),
         )
     }
@@ -337,7 +338,6 @@ private fun MediaFormat.stringOrNull(key: String): String? =
     if (!containsKey(key)) null else runCatching { getString(key) }.getOrNull()
 
 private fun Int?.positiveOrNull(): Int? = this?.takeIf { it > 0 }
-private fun Float?.positiveOrNull(): Float? = this?.takeIf { it > 0f }
 
 private fun Cursor.stringOrNull(columnName: String): String? {
     val index = getColumnIndex(columnName)
