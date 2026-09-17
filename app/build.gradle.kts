@@ -42,6 +42,15 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests {
+            // The metadata repository logs read failures through android.util.Log, which is a stub
+            // that throws on the JVM. Returning defaults keeps the pure-logic tests running without
+            // mocking the framework; nothing under test depends on an Android return value.
+            isReturnDefaultValues = true
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

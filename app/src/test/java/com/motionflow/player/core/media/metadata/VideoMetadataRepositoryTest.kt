@@ -170,14 +170,17 @@ private class FakeReader : VideoMetadataReader {
         hint: TrackFormatHint?,
     ): VideoMetadata {
         metadataReads++
-        lastDocumentInfo = documentInfo
         lastHint = hint
         failure?.let { throw it }
 
+        // Mirrors the real reader's contract: a read without a document passed in fetches it.
+        val document = documentInfo ?: document(sourceUri)
+        lastDocumentInfo = document
+
         return VideoMetadata(
             sourceUri = sourceUri,
-            title = documentInfo?.title,
-            fileSizeBytes = documentInfo?.sizeBytes,
+            title = document.title,
+            fileSizeBytes = document.sizeBytes,
         )
     }
 }
