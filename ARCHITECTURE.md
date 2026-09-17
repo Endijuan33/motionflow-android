@@ -23,6 +23,8 @@ extracted later, so extraction is a move rather than a redesign.
 | `core/designsystem/theme` | Design tokens and the theme application | Feature-specific styling, layout of screens |
 | `core/media/player` | The playback engine: how it is built, who owns it, how its state and failures are classified | Compose, screens, navigation |
 | `core/media/metadata` | Describing a media source: container, tracks, frame rate, colour, audio | Compose, playback, navigation |
+| `core/media/refresh` | Deciding and applying display refresh-rate preferences: the policy, the coordinator, the seams | Compose, Android display APIs |
+| `core/media/refresh/android` | The only code that reads a display or sets a window attribute | Decision logic, Compose |
 | `core/media/session` | Publishing playback to Android through a media session service | UI, feature state |
 | `feature/home` | Home destination state and UI, including the media picker | Navigation graph knowledge |
 | `feature/player` | Player destination: playback state, route and screen | Creating or releasing players |
@@ -38,7 +40,6 @@ phases have an agreed home, and so that no phase invents a competing structure:
 | --- | --- | --- |
 | `core/common` | when needed | Dispatchers, qualifiers, small shared primitives |
 | `core/foundation` | when needed | Process-wide services: result types, time source, capability reporting |
-| `core/media/display` | Phase 3 | Display mode enumeration and refresh-rate requests |
 | `core/media/framerate` | Phase 4 | Frame pacing, presentation timestamps, cadence matching |
 | `rendering` | Phase 5 | OpenGL ES / Vulkan surface and shader pipeline |
 | `interpolation` | Phase 6 | Interpolator contract, frame queueing, A/V sync |
@@ -251,7 +252,74 @@ why re-entering the player screen, a recomposition or a retry does not re-read t
 not cached, so retrying after the user re-grants access works. Stale reads are cancelled by the view
 model: each new source replaces the collection job that publishes into the player's state.
 
-## 6. Design system
+## 6. Refresh-rate engine
+
+```
+PlayerScreen ──┬── AndroidRefreshRateController     (window attributes)
+               │   AndroidDisplayCapabilityProvider  (Display.getSupportedModes)
+               │        ▲ implemented in refresh/android
+               ▼        │
+        RefreshRateCoordinator ── RefreshRatePolicy   (pure decision)
+               ▲
+               └── PlayerViewModel ── FrameRateInfo    (from the metadata engine)
+```
+
+### What each part owns
+
+| Part | Owns | Must not |
+| --- | --- | --- |
+| `RefreshRatePolicy` | The decision. Pure: takes a cadence and a capability snapshot, returns a decision | Touch Android, or apply anything |
+| `RefreshRateCoordinator` | When to decide, applying through the seams, remembering what was applied, restoring on detach | Know what a `Window` or a `Display` is |
+| `RefreshRateController`, `DisplayCapabilityProvider` | The seams | Contain decision logic |
+| `refresh/android/*` | Every Android display and window call | Contain decision logic |
+
+The split exists so the whole decision path — including refusals, unknown capabilities and the
+lifecycle rules — is testable with fakes, and so that the "keep Android-specific display code
+isolated" rule is structural rather than a matter of discipline.
+
+### The matching rule
+
+A mode fits a cadence when its rate is an **integer multiple** of it, because that is what makes
+motion even: every frame is held for the same number of refreshes. Candidates rank as exact (1:1),
+whole multiple (2×, 5×, …) and, last, the slowest mode still fast enough to show every frame. Within
+a tier the choice is deterministic and never "the highest number": exact takes the mode closest to
+the cadence, multiples and fallbacks take the slowest. A change is only requested when it strictly
+improves on the mode the display is already in, so two equally suitable modes never cause a switch.
+
+The tolerance is 0.2% on the ratio, chosen from the cadences: the fractional families are 0.1% from
+their whole siblings, a false multiple such as 120.000 Hz for 23.976 fps is 0.5% away. See
+`RefreshRatePolicy` for the derivation and `README.md` for the resulting table.
+
+### What it refuses to do
+
+No request is made for an unknown cadence, an observed variable cadence, unknown capabilities, a
+cadence no mode can present, or a display already at least as suitable as anything on offer. A header
+rate is a hint: it can justify an integer match, never a non-integral guess. Nothing here changes how
+many frames exist — a display refreshing five times per frame shows the same frame five times.
+Interpolation is not part of this, and the diagnostics word the two quantities apart.
+
+### Applying, and the limits of applying
+
+`AndroidRefreshRateController` sets `WindowManager.LayoutParams.preferredRefreshRate` on the player
+window: a rate, with resolution and every other window property left to the framework, which AOSP
+documents as the recommended replacement for pinning a display mode. Below API 34 that attribute must
+be a rate the display reports, and the policy only ever selects one from `Display.getSupportedModes()`,
+so requests are always well-formed without a version branch.
+
+It is advisory. Multi-window, OEM mode policies, a panel that only switches when idle, or a device
+with one mode can all leave the display where it was — so the state keeps the requested rate and the
+reported rate apart, and a refusal is recorded as a diagnostic. It never becomes a playback error and
+never pauses the video.
+
+### Recompute triggers
+
+A decision is reconsidered only when an input changes: a cadence from the metadata engine (twice per
+video — the container read, then Media3's refinement), a display change from the platform listener,
+the automatic preference, or the screen attaching. There is no timer, no per-frame work and no
+capability polling; recomputation is signalled through a flag, so a burst of inputs collapses into one
+decision for the latest state rather than a queue of stale requests.
+
+## 7. Design system
 
 The theme is the contract between design and code, so it is centralised from the start:
 
@@ -279,7 +347,7 @@ Design decisions worth keeping:
 - **Depth comes from tonal surfaces, not shadows.** Elevation stays low by design.
 - **Motion is short.** Chrome animates around moving pictures; the token scale caps at 400 ms.
 
-## 7. Build architecture
+## 8. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -302,37 +370,48 @@ Design decisions worth keeping:
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 8. Testing strategy
+## 9. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
-| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching policy |
+| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching, the whole refresh-rate matching policy and its coordinator |
 | Android Lint | `:app:lintDebug`, every push | Correctness, API misuse, resource and manifest problems |
-| Instrumented tests | not wired up | Would cover surfaces, codecs and session binding — CI has no emulator |
+| Instrumented tests | not wired up | Would cover surfaces, codecs, session binding and whether a display actually changes mode — CI has no emulator |
 
 The rule for this repository: **test what does not need a device, and test what will silently break.**
-Design tokens, hand-written mappings, the media-URI route round trip and the frame-rate arithmetic
-all fail quietly at runtime, so they are asserted. Playback policy is deliberately *not* covered by
-fake player tests: a mock `Player` would assert that the code calls the methods it visibly calls,
-while the behaviour that matters — hardware decode selection, surface lifetime, session binding — is
-device-dependent and is verified on hardware instead.
+Design tokens, hand-written mappings, the media-URI route round trip, the frame-rate arithmetic and
+the matching policy all fail quietly at runtime, so they are asserted. Playback policy is deliberately
+*not* covered by fake player tests: a mock `Player` would assert that the code calls the methods it
+visibly calls, while the behaviour that matters — hardware decode selection, surface lifetime, session
+binding, and whether a refresh-rate request is honoured — is device-dependent and is verified on
+hardware instead.
 
-The metadata engine is split so that its *decisions* are testable and its *I/O* is not: interval
-analysis, rate naming, unit scaling, error classification and the repository's caching policy are
-pure or fake-driven, while `MediaExtractor`'s behaviour on a real container is only exercised on a
-device. That boundary is why `VideoMetadataReader` is an interface.
+Both media engines are split so that their *decisions* are testable and their *I/O* is not. Metadata:
+interval analysis, rate naming, unit scaling, error classification and the repository's caching policy
+are pure or fake-driven. Refresh rate: the matching policy is a pure function, and the coordinator is
+driven through fake controller and capability providers, so refusals, unknown capabilities and the
+lifecycle rules are all covered without a display. That is what the two interfaces are for.
 
-## 9. Deliberately absent
+## 10. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 
 - **Frame interpolation, inference runtimes, native code.** Phases 6 and 7. No stub interfaces are
   defined for them, because an interface written before the problem is understood is a liability.
-- **Refresh-rate control and frame pacing.** Phases 3 and 4. The player is left on the platform's
-  default display handling so that later measurements have a clean baseline to compare against.
+  Nothing in the refresh-rate engine implies they exist: it changes how often a frame is shown, not
+  how many frames there are.
+- **Frame pacing.** Phase 4. The display now moves to the content's cadence; nothing yet decides
+  *when* a frame is released, which is what removes the judder in the cases no mode can match.
+- **The surface-level frame-rate hint.** `Surface.setFrameRate` is not called. It expresses the same
+  thing as the window attribute the engine uses — AOSP documents that attribute as its equivalent —
+  but it needs the video `Surface`, whose lifetime belongs to `PlayerView`. Phase 5 owns a surface of
+  its own, which is where that hint, with `FRAME_RATE_COMPATIBILITY_FIXED_SOURCE` semantics, belongs.
 - **A custom rendering pipeline.** Phase 5. `PlayerView` and Media3's default renderers are used
-  deliberately: they are the correct, low-risk path for this phase and the reference behaviour the
-  custom pipeline will be judged against.
+  deliberately: they are the correct, low-risk path, and the reference behaviour the custom pipeline
+  will be judged against.
+- **A settings store, and with it a persisted refresh-rate preference.** The player surface has an
+  Auto/System-default toggle, but it lives for the session. Persisting one setting would mean
+  inventing a settings architecture here; that arrives with the phase that needs it.
 - **Media library, queue, history and persisted URI grants.** Phase 9. Playback is single-file, and
   grants are not persisted across process death.
 - **Fullscreen and aspect-ratio controls.** The player layout already separates the video stage from

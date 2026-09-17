@@ -63,4 +63,22 @@
     <string name="metadata_error_permission_denied">Video details unavailable: access to the file was denied.</string>
     <string name="metadata_error_extraction_failed">Video details could not be read from the file.</string>
     <string name="metadata_error_unknown">Video details unavailable.</string>
+
+    <!-- Refresh-rate diagnostics. Display Hz and video FPS are different quantities, and are
+         labelled so that they cannot be read as one another. -->
+    <string name="player_refresh_action">Auto refresh</string>
+    <string name="refresh_video_fps">Video %1$s FPS</string>
+    <string name="refresh_display_hz">Display %1$s Hz</string>
+    <string name="refresh_status_matched">Matched</string>
+    <string name="refresh_status_fallback">Fallback</string>
+    <string name="refresh_status_unchanged">No change</string>
+    <string name="refresh_status_unknown">Unknown</string>
+    <string name="refresh_status_unsupported">Unsupported</string>
+    <string name="refresh_status_manual">System default</string>
+    <string name="refresh_reason_best_effort">No display mode matches this cadence exactly; using the slowest rate that can still show every frame.</string>
+    <string name="refresh_reason_no_suitable_mode">No display mode refreshes fast enough for this cadence.</string>
+    <string name="refresh_reason_capabilities_unknown">This device does not report its display modes.</string>
+    <string name="refresh_reason_platform_rejected">The system refused the refresh-rate request.</string>
+    <string name="refresh_reason_variable_frame_rate">This video changes its frame rate, so the display is left alone.</string>
+    <string name="refresh_reason_low_confidence">The frame rate was read from the file header, so only an exact match is used.</string>
 </resources>

@@ -98,21 +98,40 @@ frame rate, refresh rate or pacing.
 
 ---
 
-## Phase 3 — Display Refresh Rate Control ⏳
+## Phase 3 — Adaptive Display Refresh Rate ✅
 
 **Goal:** make the display's refresh rate a first-class, observable input.
 
-**Scope**
+**Delivered**
 
-- Enumerate supported display modes and their refresh rates.
-- Request a refresh rate that matches the content cadence where supported.
-- Restore the previous mode when playback ends.
-- Surface the active mode in the UI.
+- A pure matching policy: given a cadence and the display's own modes, it ranks exact matches, whole
+  multiples and a last-resort fallback, with a documented 0.2% tolerance on the ratio.
+- Display capability discovery through `Display.getSupportedModes()` and `Display.getMode()`, with a
+  platform listener for display changes and no version branches above minSdk.
+- Applying a preference through `WindowManager.LayoutParams.preferredRefreshRate` on the player
+  window, and restoring the previous value when the screen goes away.
+- A coordinator that decides only when an input changes, never repeats an identical request, and
+  treats a refusal as a diagnostic rather than a playback error.
+- Diagnostics on the player surface: the video's cadence and the display's rate labelled apart, the
+  matching status, the reason when the outcome needs explaining, and an Auto/System-default toggle.
+- 48 new unit tests (127 in total), covering the policy and the coordinator through fakes.
 
-**Exit criteria**
+**Exit criteria — met in code, unverified on hardware**
 
-- On a variable-refresh-rate device, playing 24/30/60 fps content selects the closest matching mode.
-- Unsupported requests degrade to the platform default without errors.
+- 24/30/60 fps content selects the appropriate mode from the display's own list, and fractional
+  cadences keep their precision. *Unverified:* CI has no display, so no mode has actually changed on
+  a device; this needs a hardware pass.
+- Unsupported or refused requests leave playback untouched: the request is advisory, a refusal is
+  recorded, and nothing pauses or errors. Covered by unit tests; behaviour on a device that ignores
+  the request is still to be observed.
+
+**Deferred:** the automatic preference is not persisted (no settings store yet), and
+`Surface.setFrameRate` is not used — the window attribute is the documented equivalent, and the
+surface-level hint belongs with Phase 5, which owns a surface.
+
+**Explicitly out of scope:** interpolating frames, synthesising frames, or claiming that a higher
+display refresh rate means more frames. The engine changes how often a frame is shown, never how many
+frames there are.
 
 ---
 

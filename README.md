@@ -30,12 +30,14 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 2 — Video Metadata Detection. Complete.**
+**Phase 3 — Adaptive Display Refresh Rate. Complete.**
 
-The application plays a local video end to end and can describe it. The metadata engine reads the
-container and track headers, measures the frame rate from sample timing, names the codec and the
-decoder the platform would use, and reports colour, rotation, audio layout and file size — showing
-"Unknown" for anything it genuinely does not know.
+The application plays a local video end to end, describes it, and asks the display to refresh at a
+rate that suits the video's cadence. The metadata engine reads the container and track headers,
+measures the frame rate from sample timing, names the codec and the decoder the platform would use,
+and reports colour, rotation, audio layout and file size — showing "Unknown" for anything it
+genuinely does not know. The refresh-rate engine then matches that cadence against the display's own
+modes and requests one.
 
 What exists now:
 
@@ -47,10 +49,15 @@ What exists now:
 - **Phase 2** — video metadata engine: a player-independent reader, a process-scoped cache, frame
   rate measured from sample timing with fractional rates preserved, explicit unknown states
   throughout, and a metadata panel on the player surface.
+- **Phase 3** — adaptive display refresh rate: a pure matching policy over the display's reported
+  modes, a window-level request through the platform's refresh-rate API, diagnostics on the player
+  surface, and lifecycle handling that restores the display when the screen goes away.
 
-Explicitly **not** implemented yet: frame interpolation, AI models, optical flow, OpenGL/Vulkan
-rendering, custom GPU processing, refresh-rate forcing and FPS conversion. Metadata detection is
-read-only: it **does not change playback frame rate**, refresh rate or pacing. Those are later phases.
+Explicitly **not** implemented: frame interpolation, AI-generated frames, optical flow, motion
+estimation, OpenGL/Vulkan rendering, custom shaders, decoder replacement and frame synthesis. **A
+display running at 60 Hz is not a video containing 60 frames**: matching a refresh rate changes how
+often the panel redraws, not how many frames exist. Nothing in MotionFlow claims that a 24 fps video
+becomes a 60 fps one.
 
 ## Technology Stack
 
@@ -96,6 +103,7 @@ app/src/main/java/com/motionflow/player/
 │   └── media/
 │       ├── metadata/             describing a source: container, tracks, frame rate, colour, audio
 │       ├── player/               player engine: factory, ownership, state and error mapping
+│       ├── refresh/              display refresh-rate matching, and its Android implementation
 │       └── session/              media session service
 ├── feature/
 │   ├── home/                     home destination (state holder + picker + screen)
@@ -191,6 +199,74 @@ than measuring again, and the interpolation phase uses its codec and colour fiel
 source can support. A single cached description per source is held by the application, so those
 phases get the same answer without touching the file.
 
+## Display refresh rate
+
+**Display refresh rate and video frame rate are different quantities.** The video's frame rate is how
+many distinct images a second the file contains; the display's refresh rate is how often the panel
+redraws. Showing 24 fps content on a 120 Hz panel does not produce 120 frames a second — it shows
+each of the 24 frames five times. MotionFlow changes the first to suit the second, and never claims
+otherwise. **No frame interpolation is implemented**: no frames are synthesised, no AI model runs,
+and there is no OpenGL, Vulkan or custom GPU path.
+
+### What it does
+
+Given the measured cadence and the modes the display reports, the engine picks a target mode and asks
+the platform for it, then shows what happened on the player surface.
+
+| Cadence | Display modes | Choice | Why |
+| --- | --- | --- | --- |
+| 24 fps | 60, 24 | 24 Hz | Shows each frame once |
+| 24 fps | 60, 120 | 120 Hz | 120 = 5 × 24: each frame shown 5 times, evenly |
+| 24 fps | 50, 60 | 50 Hz | No whole multiple; the slowest rate that still shows every frame |
+| 23.976 fps | 60, 24 | 24 Hz | Same family — 24 Hz panels exist precisely because of 23.976 content |
+| 30 fps | 60, 120 | 60 Hz | Both are whole multiples; the slower one costs less |
+| 24 fps | 24, 120 | 24 Hz | 1:1 beats showing each frame five times |
+| 60 fps | 50 | *none* | A 50 Hz panel cannot show 60 fps without dropping frames |
+| unknown | anything | *none* | Nothing to match |
+
+The rule is that a mode counts as a match when its rate is an **integer multiple** of the cadence,
+because that is what makes motion even: each frame is held for the same number of refreshes. A mode
+at 2.5 × the cadence (24 fps on a 60 Hz panel, the familiar 2:3 pulldown) is judder, however high the
+number looks, so it is never chosen merely for being fast.
+
+**Tolerance.** A mode counts as a multiple when `modeRate / cadence` is within **0.2%** of a whole
+number. That figure comes from the numbers themselves: the fractional cadence families sit exactly
+0.1% from their whole siblings (23.976 vs 24, 29.97 vs 30, 59.94 vs 60), so same-family modes are
+always recognised, while a false multiple is much further away — 120.000 Hz is 0.5% from five times
+23.976, and 120.000 genuinely cannot present 23.976 evenly. In absolute terms the tolerance is
+0.048 Hz at 24 fps and 0.12 Hz at 60 fps: wider than measurement noise, far narrower than the gap
+between real cadences.
+
+**When nothing is requested.** No request is made when the frame rate is unknown, when the source was
+observed varying its cadence (switching would chase a moving target), when the display will not
+report its modes, when nothing on offer can show every frame, or when the display is already at
+least as suitable as anything available. A container header rate — which rounds 23.976 to 24 — is
+treated as a hint: it may justify an integer match but never a non-integral guess.
+
+### How it is applied, and what that cannot promise
+
+The request goes through `WindowManager.LayoutParams.preferredRefreshRate` on the player window,
+which names a rate and leaves every other window property — resolution included — to the framework.
+AOSP documents this as the recommended replacement for pinning a display mode, and as equivalent to
+`Surface.setFrameRate(rate, FRAME_RATE_COMPATIBILITY_DEFAULT)`; below API 34 the platform requires it
+to be one of the rates the display reports, which is exactly what the policy selects.
+
+It is a request, not a command. **The platform may ignore it**, and MotionFlow cannot detect or
+enforce otherwise: in multi-window or picture-in-picture the window does not own the display; some
+devices switch modes only when the panel is idle; some OEM implementations resolve the request to
+whatever mode they prefer; and a device with a single fixed mode has nothing to switch to. That is
+why the diagnostics report the rate the display *reports*, separately from the rate that was asked
+for, and why the engine never pauses playback or reports a playback error when a request is refused.
+
+**No particular refresh rate is assumed to exist.** There is no code path that asks for 24, 90 or
+120 Hz as such: every candidate comes from `Display.getSupportedModes()` on the device in hand, and a
+device that reports only 60 Hz simply keeps it.
+
+Supported API range: **26–36**, using only public API that exists from API 23 (`Display.getMode`,
+`Display.getSupportedModes`, `DisplayManager.registerDisplayListener`) for the discovery side. There
+are no version branches, no reflection and no hidden APIs. Exact physical mode switching is therefore
+best-effort by design on every Android version.
+
 ## Build Instructions
 
 ### GitHub Actions (primary)
@@ -231,7 +307,7 @@ resolves Gradle itself.
 | 0 | **Project Foundation** | Reproducible build, design system, navigation, CI. **✅ complete** |
 | 1 | **Core Video Playback** | Media3 playback, media session, local media flow, player UI. **✅ complete** |
 | 2 | **Video Metadata Detection** | Container, codec, frame rate and colour detection. **✅ complete** |
-| 3 | Display Refresh Rate Control | Read supported modes and request a matching refresh rate |
+| 3 | **Adaptive Display Refresh Rate** | Match the display's own modes to the video's cadence. **✅ complete** |
 | 4 | Frame Pacing Engine | Align frame release with presentation timestamps to remove judder |
 | 5 | GPU Rendering Pipeline | OpenGL ES / Vulkan render path with a native surface |
 | 6 | Frame Interpolation Architecture | Pluggable interpolator contract, frame queueing, A/V sync |
@@ -243,6 +319,15 @@ resolves Gradle itself.
 
 ## Known Limitations
 
+- **A refresh-rate request is advisory.** The platform may ignore it — in multi-window, on a device
+  that switches modes on its own terms, or where only one mode exists. The diagnostics show the rate
+  the display reports so the difference is visible. See "Display refresh rate" above.
+- **Refresh-rate matching does not add frames.** It changes how often the panel redraws. A 24 fps
+  video shown at 120 Hz is still 24 frames a second, each shown five times. No interpolation,
+  no AI, no custom rendering.
+- **The automatic preference is not persisted.** The player surface has an Auto/System-default
+  toggle, but it lives for the session: there is no settings store yet, and adding one is a later
+  phase's work rather than something to bolt on here.
 - **Frame rate is measured over a bounded window**, so a source that changes cadence later is
   reported at the rate it starts with, and a constant rate is never *proven* — only not contradicted.
   See "Metadata detection" above.

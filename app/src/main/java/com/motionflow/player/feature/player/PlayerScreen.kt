@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
@@ -27,6 +28,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -74,12 +77,18 @@ import com.motionflow.player.core.media.metadata.colorTransferLabel
 import com.motionflow.player.core.media.metadata.durationValue
 import com.motionflow.player.core.media.metadata.fileSizeQuantity
 import com.motionflow.player.core.media.metadata.frameRateValue
+import com.motionflow.player.core.media.metadata.formatFps
 import com.motionflow.player.core.media.metadata.resolutionValue
 import com.motionflow.player.core.media.metadata.sampleRateQuantity
 import com.motionflow.player.core.media.metadata.videoCodecValue
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import com.motionflow.player.core.media.refresh.RefreshRateReason
+import com.motionflow.player.core.media.refresh.RefreshRateState
+import com.motionflow.player.core.media.refresh.RefreshRateStatus
+import com.motionflow.player.core.media.refresh.android.AndroidDisplayCapabilityProvider
+import com.motionflow.player.core.media.refresh.android.AndroidRefreshRateController
 
 /**
  * The playback surface.
@@ -97,31 +106,84 @@ fun PlayerScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val player by viewModel.player.collectAsStateWithLifecycle()
+    val refreshRate by viewModel.refreshRateState.collectAsStateWithLifecycle()
 
     RequestMediaNotificationPermission()
+    AttachRefreshRateEnvironment(viewModel)
 
     PlayerContent(
         uiState = uiState,
         player = player,
+        refreshRate = refreshRate.toDiagnosticsModel(),
         onNavigateBack = onNavigateBack,
         onPlayPause = viewModel::playPause,
         onSeek = viewModel::seekTo,
         onCycleSpeed = viewModel::cyclePlaybackSpeed,
         onToggleRepeat = viewModel::toggleRepeatMode,
+        onSetAutomaticRefreshRate = viewModel::setAutomaticRefreshRate,
         onRetry = viewModel::retry,
         modifier = modifier,
     )
 }
 
+/**
+ * Binds the refresh-rate engine to this window for as long as the screen is composed.
+ *
+ * The window, and with it any display preference, is recreated by every configuration change, so
+ * the engine is re-bound each time — which is also what makes the current decision be requested
+ * again on the new window. The platform objects are created here rather than in the view model so
+ * that the decision logic never touches Android display APIs directly.
+ */
+@Composable
+private fun AttachRefreshRateEnvironment(viewModel: PlayerViewModel) {
+    val window = LocalActivity.current?.window
+    val controller = remember(window) { window?.let(::AndroidRefreshRateController) }
+    val capabilityProvider = remember(window) { window?.let(::AndroidDisplayCapabilityProvider) }
+
+    DisposableEffect(controller, capabilityProvider) {
+        if (controller != null && capabilityProvider != null) {
+            viewModel.onRefreshRateEnvironmentAttached(controller, capabilityProvider)
+        }
+        onDispose { viewModel.onRefreshRateEnvironmentDetached() }
+    }
+}
+
+/**
+ * The refresh-rate facts the diagnostics line draws.
+ *
+ * The engine's own state carries a list of display modes, which Compose cannot prove stable, so the
+ * screen projects the handful of values it renders. This also keeps the line skippable while the
+ * playback position ticks.
+ */
+@Immutable
+private data class RefreshRateDiagnosticsModel(
+    val videoFps: Float?,
+    val displayRefreshRateHz: Float?,
+    val status: RefreshRateStatus,
+    val reason: RefreshRateReason,
+    val automaticEnabled: Boolean,
+)
+
+private fun RefreshRateState.toDiagnosticsModel(): RefreshRateDiagnosticsModel =
+    RefreshRateDiagnosticsModel(
+        videoFps = frameRate.fps,
+        displayRefreshRateHz = displayRefreshRateHz,
+        status = decision.status,
+        reason = decision.reason,
+        automaticEnabled = isAutomaticEnabled,
+    )
+
 @Composable
 private fun PlayerContent(
     uiState: PlayerUiState,
     player: Player?,
+    refreshRate: RefreshRateDiagnosticsModel,
     onNavigateBack: () -> Unit,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
     onCycleSpeed: () -> Unit,
     onToggleRepeat: () -> Unit,
+    onSetAutomaticRefreshRate: (Boolean) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -178,6 +240,11 @@ private fun PlayerContent(
             error = (metadataResult as? MetadataResult.Error)?.error,
             isLoading = metadataResult is MetadataResult.Loading,
             durationMs = uiState.displayDurationMs,
+        )
+
+        RefreshRateDiagnostics(
+            model = refreshRate,
+            onSetAutomatic = onSetAutomaticRefreshRate,
         )
     }
 }
@@ -675,6 +742,93 @@ private fun colorDetail(color: HdrInfo?): String? {
 private fun quantityText(quantity: MetadataQuantity): String =
     stringResource(quantity.unitRes, quantity.amount)
 
+/**
+ * What the display is doing, next to what the video contains.
+ *
+ * The two quantities are labelled apart deliberately: "Video 23.976 FPS" is the cadence of the
+ * content and "Display 24 Hz" is how often the panel refreshes. A panel refreshing twice as often
+ * shows each frame twice; it does not create frames, and nothing here implies that it does.
+ */
+@Composable
+private fun RefreshRateDiagnostics(
+    model: RefreshRateDiagnosticsModel,
+    onSetAutomatic: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = MotionFlowTheme.spacing
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.large, vertical = spacing.small),
+        verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = refreshRateSummary(model),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            SecondaryControlButton(
+                label = stringResource(R.string.player_refresh_action),
+                value = null,
+                isActive = model.automaticEnabled,
+                enabled = true,
+                onClick = { onSetAutomatic(!model.automaticEnabled) },
+            )
+        }
+
+        refreshRateReason(model)?.let { reason ->
+            Text(
+                text = reason,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun refreshRateSummary(model: RefreshRateDiagnosticsModel): String {
+    val videoFrameRate = model.videoFps?.let { fps ->
+        stringResource(R.string.refresh_video_fps, formatFps(fps))
+    }
+    val displayRate = model.displayRefreshRateHz?.let { rate ->
+        stringResource(R.string.refresh_display_hz, formatFps(rate))
+    }
+    val parts = listOfNotNull(videoFrameRate, displayRate, refreshStatusLabel(model.status))
+    return parts.joinToString(SUMMARY_SEPARATOR)
+}
+
+@Composable
+private fun refreshStatusLabel(status: RefreshRateStatus): String = stringResource(
+    when (status) {
+        RefreshRateStatus.MATCHED -> R.string.refresh_status_matched
+        RefreshRateStatus.FALLBACK -> R.string.refresh_status_fallback
+        RefreshRateStatus.UNCHANGED -> R.string.refresh_status_unchanged
+        RefreshRateStatus.UNKNOWN -> R.string.refresh_status_unknown
+        RefreshRateStatus.UNSUPPORTED -> R.string.refresh_status_unsupported
+        RefreshRateStatus.MANUAL -> R.string.refresh_status_manual
+    },
+)
+
+/** A reason is only shown when the outcome needs explaining; the good cases speak for themselves. */
+@Composable
+private fun refreshRateReason(model: RefreshRateDiagnosticsModel): String? = when (model.reason) {
+    RefreshRateReason.BEST_EFFORT -> stringResource(R.string.refresh_reason_best_effort)
+    RefreshRateReason.NO_SUITABLE_MODE -> stringResource(R.string.refresh_reason_no_suitable_mode)
+    RefreshRateReason.CAPABILITIES_UNKNOWN -> stringResource(R.string.refresh_reason_capabilities_unknown)
+    RefreshRateReason.PLATFORM_REJECTED -> stringResource(R.string.refresh_reason_platform_rejected)
+    RefreshRateReason.VARIABLE_FRAME_RATE -> stringResource(R.string.refresh_reason_variable_frame_rate)
+    RefreshRateReason.LOW_CONFIDENCE -> stringResource(R.string.refresh_reason_low_confidence)
+    else -> null
+}
+
 @Composable
 private fun MetadataRow(label: String, value: String, modifier: Modifier = Modifier) {
     Row(modifier = modifier.fillMaxWidth()) {
@@ -735,11 +889,19 @@ private fun PlayerContentPreview() {
                 ),
             ),
             player = null,
+            refreshRate = RefreshRateDiagnosticsModel(
+                videoFps = 23.976f,
+                displayRefreshRateHz = 24f,
+                status = RefreshRateStatus.MATCHED,
+                reason = RefreshRateReason.EXACT_MODE,
+                automaticEnabled = true,
+            ),
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
             onCycleSpeed = {},
             onToggleRepeat = {},
+            onSetAutomaticRefreshRate = {},
             onRetry = {},
         )
     }
@@ -757,11 +919,19 @@ private fun PlayerErrorPreview() {
                 ),
             ),
             player = null,
+            refreshRate = RefreshRateDiagnosticsModel(
+                videoFps = 24f,
+                displayRefreshRateHz = 60f,
+                status = RefreshRateStatus.FALLBACK,
+                reason = RefreshRateReason.BEST_EFFORT,
+                automaticEnabled = true,
+            ),
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
             onCycleSpeed = {},
             onToggleRepeat = {},
+            onSetAutomaticRefreshRate = {},
             onRetry = {},
         )
     }

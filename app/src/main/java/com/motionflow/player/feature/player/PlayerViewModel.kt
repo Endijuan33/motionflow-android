@@ -23,6 +23,10 @@ import com.motionflow.player.core.media.metadata.TrackFormatHint
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import com.motionflow.player.core.media.refresh.DisplayCapabilityProvider
+import com.motionflow.player.core.media.refresh.RefreshRateController
+import com.motionflow.player.core.media.refresh.RefreshRateCoordinator
+import com.motionflow.player.core.media.refresh.RefreshRateState
 import com.motionflow.player.core.media.session.MotionFlowMediaSessionService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -54,6 +58,17 @@ class PlayerViewModel(
 ) : AndroidViewModel(application) {
 
     private val metadataRepository = (application as MotionFlowApplication).metadataRepository
+
+    private val refreshRateCoordinator = RefreshRateCoordinator(viewModelScope)
+
+    /**
+     * Display refresh-rate diagnostics for the current video.
+     *
+     * Kept apart from [uiState] because it changes for different reasons: playback state moves
+     * constantly, while this moves only when the video's cadence, the display or the user's
+     * preference does.
+     */
+    val refreshRateState: StateFlow<RefreshRateState> = refreshRateCoordinator.state
 
     private val sourceUri: String? = PlayerRoute.sourceUriOf(savedStateHandle)
 
@@ -161,7 +176,35 @@ class PlayerViewModel(
         controller.prepare()
     }
 
+    /**
+     * Hands the refresh-rate engine the player window's display and its controller.
+     *
+     * Called by the screen when it appears and again after a configuration change, because the
+     * window — and with it any display preference — is recreated each time. The screen owns both
+     * objects: the window belongs to the UI layer, and holding it here would mean this view model
+     * reaching into Android display APIs directly.
+     */
+    fun onRefreshRateEnvironmentAttached(
+        controller: RefreshRateController,
+        capabilities: DisplayCapabilityProvider,
+    ) {
+        refreshRateCoordinator.attach(controller, capabilities)
+    }
+
+    /** Hands the display back when the player screen goes away. */
+    fun onRefreshRateEnvironmentDetached() {
+        refreshRateCoordinator.detach()
+    }
+
+    /** Turns automatic refresh-rate selection on or off for this session. */
+    fun setAutomaticRefreshRate(enabled: Boolean) {
+        refreshRateCoordinator.setAutomaticEnabled(enabled)
+    }
+
     override fun onCleared() {
+        // Restore the display before anything else: the preference belongs to this screen.
+        refreshRateCoordinator.detach()
+
         val controller = controller
         if (controller != null) {
             // Leaving the player surface pauses playback. Backgrounding the application is a
@@ -261,6 +304,13 @@ class PlayerViewModel(
         metadataJob = viewModelScope.launch {
             metadataRepository.metadata(sourceUri, hint).collect { result ->
                 _uiState.update { state -> state.copy(metadata = result) }
+                // Only a description carries a cadence. A loading or failed read leaves the last
+                // known one in place rather than briefly declaring the frame rate unknown, which
+                // would discard a display preference that is still right for the video on screen.
+                val frameRate = (result as? MetadataResult.Success)?.metadata?.video?.frameRate
+                if (frameRate != null) {
+                    refreshRateCoordinator.onVideoFrameRate(frameRate)
+                }
             }
         }
     }
