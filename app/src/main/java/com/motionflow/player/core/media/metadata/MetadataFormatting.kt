@@ -2,6 +2,7 @@ package com.motionflow.player.core.media.metadata
 
 import androidx.annotation.StringRes
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
 import com.motionflow.player.R
 import java.util.Locale
 
@@ -47,14 +48,14 @@ internal fun resolutionValue(width: Int?, height: Int?): String? {
  * codec string Media3 parsed.
  */
 internal fun videoCodecValue(mimeType: String?, codecName: String?): String? {
-    val fromMime = mimeType?.let(VIDEO_CODEC_NAMES::get)
+    val fromMime = mimeType?.let(::videoCodecName)
     if (fromMime != null) return fromMime
     return codecName?.takeIf { it.isNotBlank() }
 }
 
 /** A human name for an audio codec, else `null`. */
 internal fun audioCodecValue(mimeType: String?, codecName: String?): String? {
-    val fromMime = mimeType?.let(AUDIO_CODEC_NAMES::get)
+    val fromMime = mimeType?.let(::audioCodecName)
     if (fromMime != null) return fromMime
     return codecName?.takeIf { it.isNotBlank() }
 }
@@ -119,26 +120,37 @@ internal fun durationValue(durationMs: Long?): String? {
 private fun formatDecimal(value: Double, decimals: Int): String =
     String.format(Locale.US, "%.${decimals}f", value)
 
-private val VIDEO_CODEC_NAMES = mapOf(
-    MimeTypes.VIDEO_H264 to "H.264",
-    MimeTypes.VIDEO_H265 to "H.265",
-    MimeTypes.VIDEO_MP4V to "MPEG-4",
-    MimeTypes.VIDEO_H263 to "H.263",
-    MimeTypes.VIDEO_MPEG2 to "MPEG-2",
-    MimeTypes.VIDEO_VP8 to "VP8",
-    MimeTypes.VIDEO_VP9 to "VP9",
-    MimeTypes.VIDEO_AV1 to "AV1",
-    MimeTypes.VIDEO_DOLBY_VISION to "Dolby Vision",
-)
+/**
+ * Names for the video codecs the platform knows.
+ *
+ * Media3's MIME constants sit behind its unstable surface, so the opt-in is confined to these two
+ * mappings rather than spreading through the formatting layer.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun videoCodecName(mimeType: String): String? = when (mimeType) {
+    MimeTypes.VIDEO_H264 -> "H.264"
+    MimeTypes.VIDEO_H265 -> "H.265"
+    MimeTypes.VIDEO_MP4V -> "MPEG-4"
+    MimeTypes.VIDEO_H263 -> "H.263"
+    MimeTypes.VIDEO_MPEG2 -> "MPEG-2"
+    MimeTypes.VIDEO_VP8 -> "VP8"
+    MimeTypes.VIDEO_VP9 -> "VP9"
+    MimeTypes.VIDEO_AV1 -> "AV1"
+    MimeTypes.VIDEO_DOLBY_VISION -> "Dolby Vision"
+    else -> null
+}
 
-private val AUDIO_CODEC_NAMES = mapOf(
-    MimeTypes.AUDIO_AAC to "AAC",
-    MimeTypes.AUDIO_MPEG to "MP3",
-    MimeTypes.AUDIO_OPUS to "Opus",
-    MimeTypes.AUDIO_VORBIS to "Vorbis",
-    MimeTypes.AUDIO_FLAC to "FLAC",
-    MimeTypes.AUDIO_AC3 to "AC-3",
-    MimeTypes.AUDIO_E_AC3 to "E-AC-3",
-    MimeTypes.AUDIO_DTS to "DTS",
-    MimeTypes.AUDIO_RAW to "PCM",
-)
+/** Names for the audio codecs the platform knows. */
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun audioCodecName(mimeType: String): String? = when (mimeType) {
+    MimeTypes.AUDIO_AAC -> "AAC"
+    MimeTypes.AUDIO_MPEG -> "MP3"
+    MimeTypes.AUDIO_OPUS -> "Opus"
+    MimeTypes.AUDIO_VORBIS -> "Vorbis"
+    MimeTypes.AUDIO_FLAC -> "FLAC"
+    MimeTypes.AUDIO_AC3 -> "AC-3"
+    MimeTypes.AUDIO_E_AC3 -> "E-AC-3"
+    MimeTypes.AUDIO_DTS -> "DTS"
+    MimeTypes.AUDIO_RAW -> "PCM"
+    else -> null
+}

@@ -53,7 +53,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
 import com.motionflow.player.R
@@ -730,7 +729,7 @@ private fun PlayerContentPreview() {
                                 isVariableFrameRate = null,
                                 confidence = MetadataConfidence.HIGH,
                             ),
-                            codecMimeType = MimeTypes.VIDEO_H264,
+                            codecMimeType = "video/avc",
                         ),
                     ),
                 ),
