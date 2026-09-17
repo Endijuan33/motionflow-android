@@ -2,8 +2,6 @@ package com.motionflow.player.feature.player
 
 import android.app.Application
 import android.content.ComponentName
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -14,14 +12,19 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import com.motionflow.player.MotionFlowApplication
+import com.motionflow.player.core.media.metadata.MetadataError
+import com.motionflow.player.core.media.metadata.MetadataResult
+import com.motionflow.player.core.media.metadata.TrackFormatHint
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
 import com.motionflow.player.core.media.session.MotionFlowMediaSessionService
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,10 +32,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * Drives playback through the application's media session.
+ * Drives playback through the application's media session, and reads the source's metadata
+ * alongside it.
  *
  * The screen holds no `ExoPlayer`: it connects a [MediaController] to
  * [MotionFlowMediaSessionService], which owns the single engine for the process. That is what makes
@@ -40,13 +43,17 @@ import kotlinx.coroutines.withContext
  * rebuilt, while the session and its player carry on — and it is what keeps the player out of the
  * composition, where it would be recreated and leaked.
  *
- * Every control here is a request to that player. Nothing about decoding, rendering or buffering is
- * decided in this class.
+ * Playback and metadata are independent paths on purpose. Playback waits only for the document's
+ * label, which the storage provider answers immediately and which the media item needs in order to
+ * be presented correctly; the technical read runs on its own coroutine and its failure never stops
+ * the video.
  */
 class PlayerViewModel(
     application: Application,
     savedStateHandle: SavedStateHandle,
 ) : AndroidViewModel(application) {
+
+    private val metadataRepository = (application as MotionFlowApplication).metadataRepository
 
     private val sourceUri: String? = PlayerRoute.sourceUriOf(savedStateHandle)
 
@@ -62,6 +69,8 @@ class PlayerViewModel(
 
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var metadataJob: Job? = null
+    private var lastFormatHint: TrackFormatHint? = null
 
     private val playerListener = object : Player.Listener {
 
@@ -74,6 +83,18 @@ class PlayerViewModel(
         override fun onRepeatModeChanged(repeatMode: Int) = syncState()
 
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) = syncState()
+
+        override fun onTracksChanged(tracks: Tracks) {
+            syncState()
+            // Media3 can describe the codec, colour and bitrate of each track once it has parsed
+            // them, which it has not done at the moment playback starts. When that description
+            // arrives, the metadata is read again with it — once, because the repository recognises
+            // an already enriched description and will not repeat the work.
+            val hint = TrackFormatHint.from(tracks) ?: return
+            if (hint == lastFormatHint) return
+            lastFormatHint = hint
+            observeMetadata(hint)
+        }
 
         override fun onPlayerError(error: PlaybackException) {
             // The full exception goes to logcat; only the classification reaches the UI.
@@ -127,14 +148,16 @@ class PlayerViewModel(
         }
     }
 
-    /** Clears the failure and asks the player to try the current item again. */
+    /** Clears the failures and asks for both the current item and its description again. */
     fun retry() {
+        _uiState.update { it.copy(error = null) }
+        observeMetadata(lastFormatHint)
+
         val controller = controller
         if (controller == null) {
             if (controllerFuture == null) connectToSession()
             return
         }
-        _uiState.update { it.copy(error = null) }
         controller.prepare()
     }
 
@@ -207,18 +230,38 @@ class PlayerViewModel(
                         kind = PlayerErrorKind.INVALID_SOURCE,
                         technicalDetail = "Source scheme is not content:// or file://",
                     ),
+                    metadata = MetadataResult.Error(MetadataError.INVALID_URI),
                 )
             }
             return
         }
 
         viewModelScope.launch {
-            // The display name comes from the document provider, so it needs a real lookup off the
-            // main thread. It is only ever a label for the UI and the media notification.
-            val title = withContext(Dispatchers.IO) { documentTitleOf(sourceUri) }
+            // One provider query, and the only thing playback waits for: the media item needs its
+            // label now, or the notification and the chrome would show nothing until the technical
+            // read finished.
+            val title = metadataRepository.document(sourceUri).title
             controller.setMediaItem(mediaItem(sourceUri, title))
             controller.prepare()
             controller.play()
+
+            observeMetadata(lastFormatHint)
+        }
+    }
+
+    /**
+     * Collects the metadata read for the current source, replacing any read still in flight.
+     *
+     * Cancelling the previous collection is what makes a new source supersede an old one: the
+     * abandoned read stops at its next suspension point instead of publishing into the state.
+     */
+    private fun observeMetadata(hint: TrackFormatHint?) {
+        val sourceUri = sourceUri ?: return
+        metadataJob?.cancel()
+        metadataJob = viewModelScope.launch {
+            metadataRepository.metadata(sourceUri, hint).collect { result ->
+                _uiState.update { state -> state.copy(metadata = result) }
+            }
         }
     }
 
@@ -235,15 +278,6 @@ class PlayerViewModel(
             .setMediaMetadata(metadata)
             .build()
     }
-
-    private fun documentTitleOf(sourceUri: String): String? = runCatching {
-        getApplication<Application>().contentResolver
-            .query(Uri.parse(sourceUri), arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (nameColumn >= 0 && cursor.moveToFirst()) cursor.getString(nameColumn) else null
-            }
-    }.getOrNull()
 
     private fun syncState() {
         val controller = controller ?: return

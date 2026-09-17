@@ -30,13 +30,12 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 1 — Core Video Playback. Complete.**
+**Phase 2 — Video Metadata Detection. Complete.**
 
-The application plays a local video end to end: pick a file from the system document picker, and it
-is decoded by hardware, rendered through Media3's standard surface pipeline, and driven by a Compose
-control deck backed by a `StateFlow` state model. Playback lives in a `MediaSessionService`, so it
-survives configuration changes, is exposed to Android's media controls, and cannot be duplicated or
-leaked by the UI.
+The application plays a local video end to end and can describe it. The metadata engine reads the
+container and track headers, measures the frame rate from sample timing, names the codec and the
+decoder the platform would use, and reports colour, rotation, audio layout and file size — showing
+"Unknown" for anything it genuinely does not know.
 
 What exists now:
 
@@ -45,9 +44,13 @@ What exists now:
 - **Phase 1** — Media3 ExoPlayer playback: centralized player factory and ownership, media session,
   local media opening through the Storage Access Framework, player state model, player UI, error
   classification, lifecycle and resource management.
+- **Phase 2** — video metadata engine: a player-independent reader, a process-scoped cache, frame
+  rate measured from sample timing with fractional rates preserved, explicit unknown states
+  throughout, and a metadata panel on the player surface.
 
 Explicitly **not** implemented yet: frame interpolation, AI models, optical flow, OpenGL/Vulkan
-rendering, custom GPU processing, refresh-rate forcing and FPS conversion. Those are later phases.
+rendering, custom GPU processing, refresh-rate forcing and FPS conversion. Metadata detection is
+read-only: it **does not change playback frame rate**, refresh rate or pacing. Those are later phases.
 
 ## Technology Stack
 
@@ -91,6 +94,7 @@ app/src/main/java/com/motionflow/player/
 ├── core/
 │   ├── designsystem/theme/       colour, type, shape, spacing, elevation, motion tokens
 │   └── media/
+│       ├── metadata/             describing a source: container, tracks, frame rate, colour, audio
 │       ├── player/               player engine: factory, ownership, state and error mapping
 │       └── session/              media session service
 ├── feature/
@@ -132,6 +136,61 @@ assumes one: Media3 opens it through its content data source, and the file's dis
 from the document provider purely as a label. Sources that are neither `content://` nor `file://`
 are refused before they reach the player.
 
+## Metadata detection
+
+Once a video is loaded, MotionFlow describes it. The engine is independent of the player — the
+library screen and the performance phases will use it for sources nothing is playing — and it is
+read-only: **detecting the frame rate does not change the frame rate**, the refresh rate or the
+pacing. Acting on what it measures belongs to later phases.
+
+### What is read
+
+| Field | Source |
+| --- | --- |
+| Title, file size, MIME type | Storage provider (`ContentResolver`) |
+| Duration | Container header |
+| Resolution | Container header, refined by Media3's parsed format |
+| Rotation | Media3's parsed format, else the container header |
+| **Frame rate** | **Measured from sample timestamps** (see below) |
+| Variable frame rate | Measured, and only ever reported when observed |
+| Video codec | Track MIME type, named (H.264, H.265, VP9, AV1, …) |
+| Codec string | Media3's parsed format (`avc1.640028`) |
+| Decoder | Offered by the platform for that format; looked up, never instantiated |
+| Bitrate | Media3's parsed format, else the container header |
+| Pixel aspect ratio | Media3's parsed format |
+| Colour space, transfer, bit depth | Media3's parsed format, else the container header |
+| HDR (derived) | From the transfer characteristic |
+| Audio codec, channels, sample rate, bitrate | Container header, refined by Media3 |
+
+Every field is nullable, and anything unknown is shown as "Unknown". A missing bitrate is never
+rendered as "0 Mbps", and a missing resolution never as "0 × 0".
+
+### Frame rate, and what it can claim
+
+The rate is measured rather than copied, because container headers store whole numbers far more
+often than fractional ones — an MP4 holding 23.976 fps very often declares "24". MotionFlow walks
+consecutive sample timestamps for a bounded window (up to 240 timestamps or two seconds of content),
+filters the intervals against their median to drop stream discontinuities, and averages what is
+left. That recovers 23.976 rather than 24, and keeps 29.97 and 59.94 distinct from 30 and 60.
+
+**Limitations:**
+
+- The measurement describes the sampled window, not the whole file. A file that changes cadence
+  later is reported at the rate it starts with.
+- **Variable frame rate can only be proven, never disproven.** A window that varies is reported as
+  variable; a uniform window is reported as *not determined* rather than as constant, because
+  proving a constant rate means reading the entire timing table, and scanning whole files is out of
+  scope for this phase.
+- Header rates are kept as a fallback and reported with low confidence, since the header itself is
+  usually rounded.
+
+### Using it later
+
+The refresh-rate controller (Phase 3) and the frame-pacing engine (Phase 4) read this model rather
+than measuring again, and the interpolation phase uses its codec and colour fields to decide what a
+source can support. A single cached description per source is held by the application, so those
+phases get the same answer without touching the file.
+
 ## Build Instructions
 
 ### GitHub Actions (primary)
@@ -171,7 +230,7 @@ resolves Gradle itself.
 | --- | --- | --- |
 | 0 | **Project Foundation** | Reproducible build, design system, navigation, CI. **✅ complete** |
 | 1 | **Core Video Playback** | Media3 playback, media session, local media flow, player UI. **✅ complete** |
-| 2 | Video Metadata Detection | Container, codec, frame rate and cadence detection |
+| 2 | **Video Metadata Detection** | Container, codec, frame rate and colour detection. **✅ complete** |
 | 3 | Display Refresh Rate Control | Read supported modes and request a matching refresh rate |
 | 4 | Frame Pacing Engine | Align frame release with presentation timestamps to remove judder |
 | 5 | GPU Rendering Pipeline | OpenGL ES / Vulkan render path with a native surface |
@@ -184,6 +243,12 @@ resolves Gradle itself.
 
 ## Known Limitations
 
+- **Frame rate is measured over a bounded window**, so a source that changes cadence later is
+  reported at the rate it starts with, and a constant rate is never *proven* — only not contradicted.
+  See "Metadata detection" above.
+- **The reported decoder is the platform's preferred one for that format**, obtained by asking the
+  codec registry. It is what Media3 will normally select, but it is not a claim about the codec
+  actually instantiated for a given track at runtime.
 - **Playback speed and repeat mode are the only tunables.** No aspect-ratio or fullscreen control
   yet; the layout is built so that fullscreen is a rearrangement rather than a rewrite.
 - **Leaving the player screen pauses playback.** Backgrounding the application keeps it playing,
@@ -192,7 +257,8 @@ resolves Gradle itself.
 - **Media notification visibility depends on the notification permission** on Android 13+. It is
   requested when the player opens; playback works either way.
 - **No instrumented tests.** CI has no emulator, so everything device-dependent — surface handling,
-  codec selection, session binding — is unverified by the pipeline and must be checked on hardware.
+  codec selection, session binding, and `MediaExtractor`'s behaviour on real containers — is
+  unverified by the pipeline and must be checked on hardware.
 - **Single file playback.** There is no library, queue or history; grants are not persisted across
   process death.
 

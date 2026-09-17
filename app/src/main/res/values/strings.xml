@@ -26,4 +26,41 @@
     <string name="player_error_decoder">The video decoder could not start. Try a different file.</string>
     <string name="player_error_file_access">The video file could not be read.</string>
     <string name="player_error_playback">Playback failed.</string>
+
+    <!-- Metadata panel. Every value falls back to metadata_unknown rather than a zero. -->
+    <string name="metadata_unknown">Unknown</string>
+    <string name="metadata_details_action">Details</string>
+    <string name="metadata_hide_action">Hide</string>
+    <string name="metadata_loading">Reading video details…</string>
+
+    <string name="metadata_label_resolution">Resolution</string>
+    <string name="metadata_label_frame_rate">Frame rate</string>
+    <string name="metadata_label_video_codec">Video codec</string>
+    <string name="metadata_label_decoder">Decoder</string>
+    <string name="metadata_label_bitrate">Bitrate</string>
+    <string name="metadata_label_audio">Audio</string>
+    <string name="metadata_label_duration">Duration</string>
+    <string name="metadata_label_file_size">File size</string>
+    <string name="metadata_label_colour">Colour</string>
+    <string name="metadata_label_rotation">Rotation</string>
+
+    <string name="metadata_frame_rate_value">%1$s fps</string>
+    <string name="metadata_frame_rate_variable">%1$s · variable</string>
+    <string name="metadata_no_audio">No audio</string>
+    <string name="metadata_bit_depth_value">%1$d-bit</string>
+    <string name="metadata_audio_channels_value">%1$d ch</string>
+    <string name="metadata_rotation_value">%1$d°</string>
+
+    <string name="metadata_unit_mbps">%1$s Mbps</string>
+    <string name="metadata_unit_kbps">%1$s kbps</string>
+    <string name="metadata_unit_gb">%1$s GB</string>
+    <string name="metadata_unit_mb">%1$s MB</string>
+    <string name="metadata_unit_kb">%1$s KB</string>
+    <string name="metadata_unit_khz">%1$s kHz</string>
+
+    <string name="metadata_error_invalid_uri">Video details unavailable: the source could not be opened.</string>
+    <string name="metadata_error_unsupported_format">Video details unavailable: this container is not supported.</string>
+    <string name="metadata_error_permission_denied">Video details unavailable: access to the file was denied.</string>
+    <string name="metadata_error_extraction_failed">Video details could not be read from the file.</string>
+    <string name="metadata_error_unknown">Video details unavailable.</string>
 </resources>

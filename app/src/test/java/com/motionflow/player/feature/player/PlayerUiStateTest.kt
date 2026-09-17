@@ -1,5 +1,8 @@
 package com.motionflow.player.feature.player
 
+import com.motionflow.player.core.media.metadata.MetadataError
+import com.motionflow.player.core.media.metadata.MetadataResult
+import com.motionflow.player.core.media.metadata.VideoMetadata
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
@@ -28,6 +31,41 @@ class PlayerUiStateTest {
         assertEquals(1.0f, state.playbackSpeed, 0.0f)
         assertEquals(null, state.error)
         assertEquals(null, state.videoTitle)
+        assertEquals(MetadataResult.Loading, state.metadata)
+        assertEquals(null, state.displayDurationMs)
+    }
+
+    @Test
+    fun `the presented duration prefers what the player loaded over what the container claims`() {
+        val fromMetadata = VideoMetadata(sourceUri = "content://sample/clip.mp4", durationMs = 600_000L)
+        val loading = PlayerUiState(metadata = MetadataResult.Success(fromMetadata))
+
+        assertEquals(
+            "before the player knows a duration, the container's is shown",
+            600_000L,
+            loading.displayDurationMs,
+        )
+
+        assertEquals(
+            "once the player knows one, that is the truth",
+            634_000L,
+            loading.copy(durationMs = 634_000L).displayDurationMs,
+        )
+        assertEquals(null, PlayerUiState().displayDurationMs)
+    }
+
+    @Test
+    fun `a metadata failure does not affect playback state`() {
+        val state = PlayerUiState(
+            playerState = PlayerState.READY,
+            isPlaying = true,
+            durationMs = 120_000L,
+            metadata = MetadataResult.Error(MetadataError.UNSUPPORTED_FORMAT),
+        )
+
+        assertTrue(state.isSeekable)
+        assertTrue(state.isPlaying)
+        assertEquals(120_000L, state.displayDurationMs)
     }
 
     @Test

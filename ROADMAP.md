@@ -58,20 +58,43 @@ each has an exit criterion that can be checked rather than argued about.
 
 ---
 
-## Phase 2 — Video Metadata Detection ⏳
+## Phase 2 — Video Metadata Detection ✅
 
 **Goal:** know exactly what is being played.
 
-**Scope**
+**Delivered**
 
-- Container, track, codec, resolution and bitrate detection.
-- Real frame rate detection, including variable frame rate sources.
-- Cadence analysis for telecined and pulldown content.
+- A player-independent metadata engine: `VideoMetadataReader` (storage provider, `MediaExtractor`,
+  timestamp probe, decoder lookup) behind a process-scoped `VideoMetadataRepository`.
+- Container and track description: duration, resolution, rotation, video and audio codec, codec
+  string, preferred decoder, bitrate, pixel aspect ratio, colour space, transfer and bit depth,
+  audio channel count, sample rate, plus the document's label, size and MIME type.
+- Frame rate measured from sample timestamps, preserving fractional rates (23.976 stays 23.976),
+  with a named-rate vocabulary and an explicit unknown state.
+- Explicit `MetadataResult` states and actionable `MetadataError` classifications.
+- A metadata panel on the player surface, showing a summary without interaction and the full
+  description on expansion, with "Unknown" for anything not measured.
+- Metadata feeding `PlayerUiState` asynchronously, refined once by Media3's parsed track formats,
+  with stale reads cancelled when a new source is selected.
 
-**Exit criteria**
+**Exit criteria — met, with one deviation and one deferral**
 
-- The reported frame rate matches `ffprobe` for a corpus of CFR and VFR test files.
-- VFR content is flagged rather than silently reported as a single frame rate.
+- Frame rate arithmetic is asserted against uniform, millisecond-dithered and variable synthetic
+  timelines, and fractional rates survive the round trip. *Deviation:* the criteria named an
+  `ffprobe` corpus, which CI cannot provide; the arithmetic is unit tested instead, and a real
+  corpus comparison moves to on-device verification.
+- Unsupported containers, permissions, missing files and malformed sources all produce a
+  classification rather than a crash.
+- *Deferral:* "VFR content is flagged rather than silently reported as a single frame rate" is
+  satisfied in one direction only. A varying window is flagged; a uniform window is reported as
+  *not determined*, because proving a constant rate requires reading the whole timing table and this
+  phase rules out full-file scans. Full-file confirmation is deferred to Phase 4, where pacing needs
+  the answer badly enough to pay for it.
+- *Moved:* cadence analysis for telecined content now belongs to Phase 4 as well — it is only
+  actionable once something paces frames.
+
+**Explicitly out of scope:** acting on the measurements. Metadata detection does not change playback
+frame rate, refresh rate or pacing.
 
 ---
 

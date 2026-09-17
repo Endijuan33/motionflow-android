@@ -6,6 +6,7 @@ import android.os.Build
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -52,11 +53,31 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
 import com.motionflow.player.R
 import com.motionflow.player.core.designsystem.theme.MotionFlowTheme
 import com.motionflow.player.core.designsystem.theme.MotionFlowVideoSurface
+import com.motionflow.player.core.media.metadata.AudioTrackMetadata
+import com.motionflow.player.core.media.metadata.FrameRateInfo
+import com.motionflow.player.core.media.metadata.HdrInfo
+import com.motionflow.player.core.media.metadata.MetadataConfidence
+import com.motionflow.player.core.media.metadata.MetadataError
+import com.motionflow.player.core.media.metadata.MetadataQuantity
+import com.motionflow.player.core.media.metadata.MetadataResult
+import com.motionflow.player.core.media.metadata.VideoMetadata
+import com.motionflow.player.core.media.metadata.VideoTrackMetadata
+import com.motionflow.player.core.media.metadata.audioCodecValue
+import com.motionflow.player.core.media.metadata.bitrateQuantity
+import com.motionflow.player.core.media.metadata.colorSpaceLabel
+import com.motionflow.player.core.media.metadata.colorTransferLabel
+import com.motionflow.player.core.media.metadata.durationValue
+import com.motionflow.player.core.media.metadata.fileSizeQuantity
+import com.motionflow.player.core.media.metadata.frameRateValue
+import com.motionflow.player.core.media.metadata.resolutionValue
+import com.motionflow.player.core.media.metadata.sampleRateQuantity
+import com.motionflow.player.core.media.metadata.videoCodecValue
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
@@ -148,6 +169,16 @@ private fun PlayerContent(
             onSeek = onSeek,
             onCycleSpeed = onCycleSpeed,
             onToggleRepeat = onToggleRepeat,
+        )
+
+        // Passed as plain values rather than as the MetadataResult itself: the interface type is not
+        // provably stable, and this panel must be skipped while the position ticks.
+        val metadataResult = uiState.metadata
+        MetadataPanel(
+            metadata = (metadataResult as? MetadataResult.Success)?.metadata,
+            error = (metadataResult as? MetadataResult.Error)?.error,
+            isLoading = metadataResult is MetadataResult.Loading,
+            durationMs = uiState.displayDurationMs,
         )
     }
 }
@@ -467,10 +498,212 @@ private fun DrawScope.drawPauseMark(color: Color) {
     )
 }
 
+/**
+ * The technical description of the loaded source.
+ *
+ * Collapsed it shows what a person looks for first — resolution, frame rate, codec — so the
+ * essentials need no interaction; expanded it adds the fields that matter when something looks
+ * wrong. A value that is not known is rendered as unknown rather than as a zero, so the panel never
+ * implies a measurement that was never made.
+ */
+@Composable
+private fun MetadataPanel(
+    metadata: VideoMetadata?,
+    error: MetadataError?,
+    isLoading: Boolean,
+    durationMs: Long?,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = MotionFlowTheme.spacing
+    val unknown = stringResource(R.string.metadata_unknown)
+    var expanded by remember { mutableStateOf(false) }
+
+    val summary = metadata?.let { metadataSummary(it) }
+    val details = metadata?.let { metadataDetails(it, durationMs, unknown) }.orEmpty()
+    val status = when {
+        metadata != null -> summary ?: unknown
+        error != null -> stringResource(error.messageRes)
+        isLoading -> stringResource(R.string.metadata_loading)
+        else -> unknown
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.large, vertical = spacing.small),
+        verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = status,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (details.isNotEmpty()) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(
+                        text = stringResource(
+                            if (expanded) {
+                                R.string.metadata_hide_action
+                            } else {
+                                R.string.metadata_details_action
+                            },
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+        }
+
+        if (expanded) {
+            details.forEach { detail ->
+                MetadataRow(label = detail.first, value = detail.second)
+            }
+        }
+    }
+}
+
+@Composable
+private fun metadataSummary(metadata: VideoMetadata): String? {
+    val video = metadata.video ?: return null
+    val frameRate = frameRateValue(video.frameRate)?.let { value ->
+        stringResource(R.string.metadata_frame_rate_value, value)
+    }
+    val parts = listOfNotNull(
+        resolutionValue(video.width, video.height),
+        frameRate,
+        videoCodecValue(video.codecMimeType, video.codecName),
+    )
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(SUMMARY_SEPARATOR)
+}
+
+@Composable
+private fun metadataDetails(
+    metadata: VideoMetadata,
+    durationMs: Long?,
+    unknown: String,
+): List<Pair<String, String>> = buildList {
+    metadata.video?.let { video ->
+        add(metadataRow(R.string.metadata_label_resolution, resolutionValue(video.width, video.height) ?: unknown))
+        add(metadataRow(R.string.metadata_label_frame_rate, frameRateDetail(video.frameRate, unknown)))
+        add(
+            metadataRow(
+                R.string.metadata_label_video_codec,
+                videoCodecValue(video.codecMimeType, video.codecName) ?: unknown,
+            ),
+        )
+        video.decoderName?.let { decoder ->
+            add(metadataRow(R.string.metadata_label_decoder, decoder))
+        }
+        bitrateQuantity(video.bitrateBitsPerSecond)?.let { bitrate ->
+            add(metadataRow(R.string.metadata_label_bitrate, quantityText(bitrate)))
+        }
+        colorDetail(video.color)?.let { colour ->
+            add(metadataRow(R.string.metadata_label_colour, colour))
+        }
+        video.rotationDegrees?.takeIf { it != 0 }?.let { rotation ->
+            add(
+                metadataRow(
+                    R.string.metadata_label_rotation,
+                    stringResource(R.string.metadata_rotation_value, rotation),
+                ),
+            )
+        }
+    }
+
+    add(metadataRow(R.string.metadata_label_duration, durationValue(durationMs) ?: unknown))
+    fileSizeQuantity(metadata.fileSizeBytes)?.let { size ->
+        add(metadataRow(R.string.metadata_label_file_size, quantityText(size)))
+    }
+    add(metadataRow(R.string.metadata_label_audio, audioDetail(metadata.audio, unknown)))
+}
+
+@Composable
+private fun metadataRow(@StringRes labelRes: Int, value: String): Pair<String, String> {
+    val label = stringResource(labelRes)
+    return label to value
+}
+
+@Composable
+private fun frameRateDetail(frameRate: FrameRateInfo, unknown: String): String {
+    val value = frameRateValue(frameRate) ?: return unknown
+    val text = stringResource(R.string.metadata_frame_rate_value, value)
+    return if (frameRate.isVariableFrameRate == true) {
+        stringResource(R.string.metadata_frame_rate_variable, text)
+    } else {
+        text
+    }
+}
+
+@Composable
+private fun audioDetail(audio: AudioTrackMetadata?, unknown: String): String {
+    if (audio == null) return stringResource(R.string.metadata_no_audio)
+
+    val channels = audio.channelCount?.let { count ->
+        stringResource(R.string.metadata_audio_channels_value, count)
+    }
+    val sampleRate = sampleRateQuantity(audio.sampleRateHz)?.let { quantityText(it) }
+    val parts = listOfNotNull(
+        audioCodecValue(audio.mimeType, audio.codecName),
+        channels,
+        sampleRate,
+    )
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(SUMMARY_SEPARATOR) ?: unknown
+}
+
+@Composable
+private fun colorDetail(color: HdrInfo?): String? {
+    if (color == null) return null
+
+    val bitDepth = color.bitDepth?.let { depth ->
+        stringResource(R.string.metadata_bit_depth_value, depth)
+    }
+    val parts = listOfNotNull(
+        color.transfer?.let { colorTransferLabel(it) },
+        color.colorSpace?.let { colorSpaceLabel(it) },
+        bitDepth,
+    )
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(SUMMARY_SEPARATOR)
+}
+
+@Composable
+private fun quantityText(quantity: MetadataQuantity): String =
+    stringResource(quantity.unitRes, quantity.amount)
+
+@Composable
+private fun MetadataRow(label: String, value: String, modifier: Modifier = Modifier) {
+    Row(modifier = modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(LABEL_WEIGHT),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(VALUE_WEIGHT),
+        )
+    }
+}
+
 private val TRANSPORT_ICON_SIZE = 32.dp
 private val CHROME_ICON_SIZE = 24.dp
 private const val STROKE_RATIO = 0.10f
 private const val NOTIFICATION_TAG = "MotionFlowPlayback"
+
+/** Bullet separator between facts on one line. A typographic mark, so it is not translated. */
+private const val SUMMARY_SEPARATOR = " · "
+
+private const val LABEL_WEIGHT = 0.42f
+private const val VALUE_WEIGHT = 0.58f
 
 @Preview(name = "Player", showBackground = true, backgroundColor = 0xFF08090C)
 @Composable
@@ -484,6 +717,23 @@ private fun PlayerContentPreview() {
                 positionMs = 128_000L,
                 playbackSpeed = 1.25f,
                 videoTitle = "Sample clip.mp4",
+                metadata = MetadataResult.Success(
+                    VideoMetadata(
+                        sourceUri = "content://sample/clip.mp4",
+                        title = "Sample clip.mp4",
+                        durationMs = 634_000L,
+                        video = VideoTrackMetadata(
+                            width = 1920,
+                            height = 1080,
+                            frameRate = FrameRateInfo.measured(
+                                fps = 23.976f,
+                                isVariableFrameRate = null,
+                                confidence = MetadataConfidence.HIGH,
+                            ),
+                            codecMimeType = MimeTypes.VIDEO_H264,
+                        ),
+                    ),
+                ),
             ),
             player = null,
             onNavigateBack = {},

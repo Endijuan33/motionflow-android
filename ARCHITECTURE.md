@@ -22,6 +22,7 @@ extracted later, so extraction is a move rather than a redesign.
 | `com.motionflow.player` | Process entry point, single activity, application-level Compose host | Feature UI, business rules |
 | `core/designsystem/theme` | Design tokens and the theme application | Feature-specific styling, layout of screens |
 | `core/media/player` | The playback engine: how it is built, who owns it, how its state and failures are classified | Compose, screens, navigation |
+| `core/media/metadata` | Describing a media source: container, tracks, frame rate, colour, audio | Compose, playback, navigation |
 | `core/media/session` | Publishing playback to Android through a media session service | UI, feature state |
 | `feature/home` | Home destination state and UI, including the media picker | Navigation graph knowledge |
 | `feature/player` | Player destination: playback state, route and screen | Creating or releasing players |
@@ -35,15 +36,14 @@ phases have an agreed home, and so that no phase invents a competing structure:
 
 | Reserved package (or module) | Arrives with | Responsibility |
 | --- | --- | --- |
-| `core/common` | 2 | Dispatchers, qualifiers, small shared primitives |
-| `core/foundation` | 2 | Process-wide services: result types, time source, capability reporting |
-| `core/media/metadata` | 2 | Container/codec/frame-rate and cadence detection |
-| `core/media/display` | 3 | Display mode enumeration and refresh-rate requests |
-| `core/media/framerate` | 4 | Frame pacing, presentation timestamps, cadence matching |
-| `rendering` | 5 | OpenGL ES / Vulkan surface and shader pipeline |
-| `interpolation` | 6 | Interpolator contract, frame queueing, A/V sync |
-| `inference` | 7 | ONNX Runtime / NCNN model loading and execution |
-| `performance` | 8 | Thermal and battery adaptation |
+| `core/common` | when needed | Dispatchers, qualifiers, small shared primitives |
+| `core/foundation` | when needed | Process-wide services: result types, time source, capability reporting |
+| `core/media/display` | Phase 3 | Display mode enumeration and refresh-rate requests |
+| `core/media/framerate` | Phase 4 | Frame pacing, presentation timestamps, cadence matching |
+| `rendering` | Phase 5 | OpenGL ES / Vulkan surface and shader pipeline |
+| `interpolation` | Phase 6 | Interpolator contract, frame queueing, A/V sync |
+| `inference` | Phase 7 | ONNX Runtime / NCNN model loading and execution |
+| `performance` | Phase 8 | Thermal and battery adaptation |
 
 ## 2. Layering and dependency rules
 
@@ -171,7 +171,87 @@ Playback errors are classified once, in `PlayerError`, into the seven things a p
 source, generic failure) plus a technical detail that goes to logcat and never to the screen.
 Media paths are not logged: a URI identifies what someone is watching.
 
-## 5. Design system
+## 5. Metadata engine
+
+```
+PlayerViewModel ──┬── VideoMetadataRepository ── AndroidVideoMetadataReader
+                  │        (process-scoped)          ├── ContentResolver   label, size, MIME
+                  │                                  ├── MediaExtractor    container + track headers
+                  │                                  ├── timestamp probe   frame rate
+                  │                                  └── MediaCodecList    decoder name (query only)
+                  └── TrackFormatHint.from(Tracks) ──┘   (codec, colour, bitrate from Media3)
+```
+
+### Responsibilities
+
+The engine answers one question: **what is this file?** It produces an immutable `VideoMetadata`
+describing the container, the video track, the audio track and the source document, or an explicit
+`MetadataError` saying why it could not. It is deliberately usable without a player — the library
+screen and the performance phases describe sources nothing is playing — and it holds no Compose
+types, so it can be driven by a service, a test or a future headless component.
+
+### Sources, and what each can prove
+
+| Source | Provides | Cost |
+| --- | --- | --- |
+| `ContentResolver` | Display name, size, MIME type | One provider query per source |
+| `MediaExtractor` | Container and track headers: dimensions, rotation, bitrate, channel count, sample rate, colour | Header parse; no decoding, no sample data copied |
+| Timestamp probe | Frame rate and in-window variability | Up to 240 timestamps or two seconds of content, whichever comes first |
+| `MediaCodecList` | Which decoder the platform would choose | A registry lookup; no codec is created |
+| Media3 `Tracks` | Parsed codec string, colour, bitrate, pixel aspect ratio | Free — the player has already parsed them |
+
+Media3's parsed formats arrive *after* playback starts, so the first description is built from the
+provider and the container alone and is refined once when the player reports its tracks. The
+repository treats a description read without that hint as improvable, and one read with it as final,
+so the refinement happens exactly once rather than on every callback.
+
+### Frame rate
+
+The rate is **measured, not read**. Container headers store whole numbers far more often than
+fractional ones — an MP4 holding 23.976 fps very often declares "24" — so a header value is reported
+with low confidence and used only as a fallback. The primary measurement walks consecutive sample
+timestamps and derives the rate from the intervals:
+
+- Intervals are filtered against their **median** before averaging. The filter drops stream
+  discontinuities (an edit, a dropped run of frames) and makes the rate robust on containers with
+  coarse timestamps, where 23.976 fps arrives as alternating 41 ms and 42 ms intervals. Averaging
+  those recovers 23.976 where a single interval would report 23 or 24.
+- The result is a `Float`, never rounded to an integer, and compared against the named rates
+  (23.976, 24, 25, 29.97, 30, 50, 59.94, 60) with a 0.01 fps tolerance — far tighter than the gap
+  between neighbours, far looser than the measurement error.
+- An unrecognised rate is reported as itself ("15 fps"), not forced into the nearest name.
+
+### What the engine cannot prove
+
+**Variable frame rate is only ever reported when it is observed.** A bounded window can show that a
+source varies; it can never show that it does not. So:
+
+- Variability found in the window → `isVariableFrameRate = true`, with the source recorded as a
+  measurement.
+- A uniform window → `isVariableFrameRate = null`, meaning *not determined*. It is never reported as
+  `false`, because proving a constant rate requires reading the whole timing table, which is exactly
+  the full-file scan this phase rules out.
+- `fps` and `isVariableFrameRate` are both nullable for the same reason: no measurement is ever
+  reported as zero.
+
+The same honesty applies to every other field. Unknown dimensions are `null` and the panel shows
+"Unknown"; nothing is inferred from resolution, bit depth or filename.
+
+### What the engine does not do
+
+It **does not change playback**. Detecting that a file holds 23.976 fps does not select a refresh
+rate, pace a frame or alter the output in any way — the description is read-only, and the player
+renders exactly as it did before. Acting on what was measured belongs to the refresh-rate and
+frame-pacing phases, which will read this model rather than measure again.
+
+### Caching
+
+`VideoMetadataRepository` holds a **single** entry, owned by the application, keyed by source. It is
+why re-entering the player screen, a recomposition or a retry does not re-read the file. Failures are
+not cached, so retrying after the user re-grants access works. Stale reads are cancelled by the view
+model: each new source replaces the collection job that publishes into the player's state.
+
+## 6. Design system
 
 The theme is the contract between design and code, so it is centralised from the start:
 
@@ -199,7 +279,7 @@ Design decisions worth keeping:
 - **Depth comes from tonal surfaces, not shadows.** Elevation stays low by design.
 - **Motion is short.** Chrome animates around moving pictures; the token scale caps at 400 ms.
 
-## 6. Build architecture
+## 7. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -222,22 +302,27 @@ Design decisions worth keeping:
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 7. Testing strategy
+## 8. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
-| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, readout formatting |
+| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching policy |
 | Android Lint | `:app:lintDebug`, every push | Correctness, API misuse, resource and manifest problems |
 | Instrumented tests | not wired up | Would cover surfaces, codecs and session binding — CI has no emulator |
 
 The rule for this repository: **test what does not need a device, and test what will silently break.**
-Design tokens, hand-written mappings and the media-URI route round trip all fail quietly at runtime,
-so they are asserted. Playback policy is deliberately *not* covered by fake player tests: a mock
-`Player` would assert that the code calls the methods it visibly calls, while the behaviour that
-matters — hardware decode selection, surface lifetime, session binding — is device-dependent and is
-verified on hardware instead.
+Design tokens, hand-written mappings, the media-URI route round trip and the frame-rate arithmetic
+all fail quietly at runtime, so they are asserted. Playback policy is deliberately *not* covered by
+fake player tests: a mock `Player` would assert that the code calls the methods it visibly calls,
+while the behaviour that matters — hardware decode selection, surface lifetime, session binding — is
+device-dependent and is verified on hardware instead.
 
-## 8. Deliberately absent
+The metadata engine is split so that its *decisions* are testable and its *I/O* is not: interval
+analysis, rate naming, unit scaling, error classification and the repository's caching policy are
+pure or fake-driven, while `MediaExtractor`'s behaviour on a real container is only exercised on a
+device. That boundary is why `VideoMetadataReader` is an interface.
+
+## 9. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 
