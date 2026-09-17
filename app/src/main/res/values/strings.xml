@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MotionFlow</string>
+    <string name="home_tagline">Adaptive Video Player</string>
+    <string name="home_status">Foundation initialized successfully.</string>
+    <string name="home_version_format">Version %1$s (%2$d)</string>
+    <string name="home_settings_action">Settings</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_placeholder">Playback, display and interpolation preferences arrive in a later phase.</string>
+    <string name="settings_back_action">Back</string>
+</resources>

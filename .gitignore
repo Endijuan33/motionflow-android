@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+local.properties
+*.iml
+.idea/
+captures/
+
+# Native build output (reserved: NDK / JNI work lands in a later phase)
+.externalNativeBuild/
+.cxx/
+
+# Signing material must never be committed.
+*.jks
+*.keystore
+
+# OS noise
+.DS_Store
+Thumbs.db

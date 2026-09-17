@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base theme for the application window.
+
+         The platform Material theme is used instead of an AppCompat or Material Components theme
+         because every pixel is drawn by Compose and neither library is a dependency. The only job
+         left to this theme is painting the launch window so the first frame the user sees is the
+         MotionFlow background rather than white.
+
+         Bar colours and icon appearance are handled by Activity.enableEdgeToEdge(). -->
+    <style name="Theme.MotionFlow" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/motionflow_background</item>
+    </style>
+</resources>

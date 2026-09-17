@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window background. Mirrors MotionFlowColorTokens.BACKGROUND so the pre-Compose frame of the
+         launch window matches the first composed frame. -->
+    <color name="motionflow_background">#08090C</color>
+
+    <!-- Adaptive launcher icon background layer. -->
+    <color name="ic_launcher_background">#0A0E14</color>
+</resources>
