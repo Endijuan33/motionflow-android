@@ -113,15 +113,16 @@ class RenderingCoordinator(
 
     private fun publish() {
         val attached = attachment?.attached == true
+        val attachable = processingAttachable()
         val capabilities = RenderingCapabilities(
             apiLevel = resolveApiLevel(),
             surfaceType = if (surfaceBound) surfaceType else SurfaceType.UNKNOWN,
-            processingAttachable = processingAttachable(),
+            processingAttachable = attachable,
         )
 
         _diagnostics.value = RenderingDiagnostics(
             pipeline = RenderingPipeline(
-                mode = modeFor(capabilities.processingAttachable),
+                mode = modeFor(attachable),
                 capabilities = capabilities,
                 surfaceBound = surfaceBound,
                 processingAttached = attached,
