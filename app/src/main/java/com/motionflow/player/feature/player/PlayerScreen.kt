@@ -59,6 +59,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import com.motionflow.player.R
 import com.motionflow.player.core.designsystem.theme.MotionFlowTheme
@@ -331,6 +332,10 @@ private fun VideoStage(
  * The default is a `SurfaceView`. A texture view would be reported as such if that ever changed, and
  * anything else is reported as unknown rather than being called a surface view.
  */
+// getVideoSurfaceView is part of Media3's unstable surface: what it returns is supported, the exact
+// signature is not frozen yet. The annotation is written fully qualified because Kotlin also has a
+// `kotlin.OptIn`.
+@androidx.annotation.OptIn(UnstableApi::class)
 private fun surfaceTypeOf(playerView: PlayerView): SurfaceType = when (playerView.videoSurfaceView) {
     is SurfaceView -> SurfaceType.SURFACE_VIEW
     is TextureView -> SurfaceType.TEXTURE_VIEW
