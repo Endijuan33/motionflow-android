@@ -127,7 +127,10 @@ class RenderingCoordinator(
                 surfaceBound = surfaceBound,
                 processingAttached = attached,
             ),
-            metrics = metrics,
+            metrics = metrics.copy(
+                surfaceAttachCount = attachCount,
+                surfaceDetachCount = detachCount,
+            ),
             unavailableReason = unavailableReason(),
         )
     }
