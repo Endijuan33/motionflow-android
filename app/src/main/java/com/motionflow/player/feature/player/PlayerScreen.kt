@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import android.view.SurfaceView
+import android.view.TextureView
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -97,6 +99,13 @@ import com.motionflow.player.core.media.refresh.RefreshRateState
 import com.motionflow.player.core.media.refresh.RefreshRateStatus
 import com.motionflow.player.core.media.refresh.android.AndroidDisplayCapabilityProvider
 import com.motionflow.player.core.media.refresh.android.AndroidRefreshRateController
+import com.motionflow.player.core.media.rendering.ProcessingUnavailableReason
+import com.motionflow.player.core.media.rendering.RenderingCapabilities
+import com.motionflow.player.core.media.rendering.RenderingDiagnostics
+import com.motionflow.player.core.media.rendering.RenderingMetrics
+import com.motionflow.player.core.media.rendering.RenderingMode
+import com.motionflow.player.core.media.rendering.RenderingPipeline
+import com.motionflow.player.core.media.rendering.SurfaceType
 
 /**
  * The playback surface.
@@ -116,6 +125,7 @@ fun PlayerScreen(
     val player by viewModel.player.collectAsStateWithLifecycle()
     val refreshRate by viewModel.refreshRateState.collectAsStateWithLifecycle()
     val framePacing by viewModel.framePacingState.collectAsStateWithLifecycle()
+    val rendering by viewModel.renderingDiagnostics.collectAsStateWithLifecycle()
 
     RequestMediaNotificationPermission()
     AttachRefreshRateEnvironment(viewModel)
@@ -125,6 +135,14 @@ fun PlayerScreen(
         player = player,
         refreshRate = refreshRate.toDiagnosticsModel(),
         framePacing = framePacing,
+        rendering = rendering,
+        onSurfaceChange = { surfaceType ->
+            if (surfaceType == null) {
+                viewModel.onRenderingSurfaceReleased()
+            } else {
+                viewModel.onRenderingSurfaceCreated(surfaceType)
+            }
+        },
         onNavigateBack = onNavigateBack,
         onPlayPause = viewModel::playPause,
         onSeek = viewModel::seekTo,
@@ -189,6 +207,8 @@ private fun PlayerContent(
     player: Player?,
     refreshRate: RefreshRateDiagnosticsModel,
     framePacing: FramePacingState,
+    rendering: RenderingDiagnostics,
+    onSurfaceChange: (SurfaceType?) -> Unit,
     onNavigateBack: () -> Unit,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -211,7 +231,11 @@ private fun PlayerContent(
                 .fillMaxWidth()
                 .background(MotionFlowVideoSurface),
         ) {
-            VideoStage(player = player, modifier = Modifier.fillMaxSize())
+            VideoStage(
+                player = player,
+                onSurfaceChange = onSurfaceChange,
+                modifier = Modifier.fillMaxSize(),
+            )
 
             if (uiState.isLoading) {
                 CircularProgressIndicator(
@@ -259,25 +283,35 @@ private fun PlayerContent(
         )
 
         FramePacingDiagnostics(state = framePacing)
+
+        RenderingSection(diagnostics = rendering)
     }
 }
 
 /**
  * Hosts the Media3 `PlayerView`.
  *
- * `PlayerView` builds and owns a `SurfaceView`, keeps the video's aspect ratio and handles the
- * surface's creation and destruction itself, which is exactly the part that leaks when it is done
- * by hand. Its own controller is switched off — MotionFlow draws its own controls — leaving the
- * view as a pure video stage. Moving to a custom rendering pipeline means replacing this
- * composable and nothing else.
+ * `PlayerView` builds and owns the video surface — a `SurfaceView` by default — keeps the video's
+ * aspect ratio, and handles the surface's creation and destruction itself, which is exactly the part
+ * that leaks when it is done by hand. Its own controller is switched off, leaving the view as a pure
+ * video stage.
+ *
+ * The view, and the surface inside it, belong to this screen and are never handed to the rendering
+ * foundation or to any long-lived object. Two values cross the boundary: which kind of surface
+ * Media3 built, and whether one exists at all. Nothing here can affect when a frame is presented.
  */
 @Composable
-private fun VideoStage(player: Player?, modifier: Modifier = Modifier) {
+private fun VideoStage(
+    player: Player?,
+    onSurfaceChange: (SurfaceType?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     AndroidView(
         modifier = modifier,
         factory = { context ->
             PlayerView(context).apply {
                 setUseController(false)
+                onSurfaceChange(surfaceTypeOf(this))
             }
         },
         update = { view ->
@@ -286,8 +320,21 @@ private fun VideoStage(player: Player?, modifier: Modifier = Modifier) {
         onRelease = { view ->
             // Detach before the view goes away so the surface is never held by a dead player.
             view.setPlayer(null)
+            onSurfaceChange(null)
         },
     )
+}
+
+/**
+ * Reads which kind of surface `PlayerView` actually built, rather than assuming one.
+ *
+ * The default is a `SurfaceView`. A texture view would be reported as such if that ever changed, and
+ * anything else is reported as unknown rather than being called a surface view.
+ */
+private fun surfaceTypeOf(playerView: PlayerView): SurfaceType = when (playerView.videoSurfaceView) {
+    is SurfaceView -> SurfaceType.SURFACE_VIEW
+    is TextureView -> SurfaceType.TEXTURE_VIEW
+    else -> SurfaceType.UNKNOWN
 }
 
 @Composable
@@ -843,6 +890,84 @@ private fun refreshRateReason(model: RefreshRateDiagnosticsModel): String? = whe
 }
 
 /**
+ * What is rendering the video, and what could render it.
+ *
+ * "Rendering" is the path frames take today — Media3's own renderer — and "processing" is a stage
+ * that would sit in front of the display, which nothing in this application attaches. The two are
+ * kept apart on purpose: no state here means frames are being generated or copied.
+ */
+@Composable
+private fun RenderingSection(diagnostics: RenderingDiagnostics, modifier: Modifier = Modifier) {
+    val spacing = MotionFlowTheme.spacing
+    val note = renderingNote(diagnostics)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.large, vertical = spacing.small),
+        verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+    ) {
+        Text(
+            text = renderingSummary(diagnostics),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        note?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun renderingSummary(diagnostics: RenderingDiagnostics): String {
+    val firstFrame = diagnostics.metrics.firstFrameLatencyMs?.let { latency ->
+        stringResource(R.string.rendering_first_frame, latency.toString())
+    }
+    val parts = listOfNotNull(
+        stringResource(
+            R.string.rendering_label,
+            stringResource(R.string.rendering_mode_native_media3),
+        ),
+        stringResource(R.string.rendering_processing_label, processingValue(diagnostics)),
+        firstFrame,
+    )
+    return parts.joinToString(SUMMARY_SEPARATOR)
+}
+
+@Composable
+private fun processingValue(diagnostics: RenderingDiagnostics): String = when {
+    // Unreachable while no stage is implemented, and kept so that a stage which does attach could
+    // never be displayed as inactive.
+    diagnostics.pipeline.processingActive -> stringResource(R.string.rendering_processing_active)
+
+    diagnostics.pipeline.mode == RenderingMode.PROCESSING_NOT_ACTIVE ->
+        stringResource(R.string.rendering_processing_inactive)
+
+    else -> stringResource(R.string.rendering_processing_unavailable)
+}
+
+/** A note only appears when the reason needs explaining; "unavailable" speaks for itself. */
+@Composable
+private fun renderingNote(diagnostics: RenderingDiagnostics): String? =
+    when (diagnostics.unavailableReason) {
+        ProcessingUnavailableReason.NO_SURFACE -> stringResource(R.string.rendering_note_no_surface)
+
+        ProcessingUnavailableReason.STAGE_UNAVAILABLE ->
+            stringResource(R.string.rendering_note_stage_unavailable)
+
+        ProcessingUnavailableReason.NO_STAGE_IMPLEMENTED -> null
+
+        null -> null
+    }
+
+/**
  * How the display's cadence relates to the video's, and what was done about it.
  *
  * "Cadence" names a relationship between two rates — the video's and the display's — and "pacing"
@@ -979,6 +1104,28 @@ private const val LABEL_WEIGHT = 0.42f
 private const val VALUE_WEIGHT = 0.58f
 
 /**
+ * Builds a rendering state for previews: a surface is bound and Media3 is rendering, with no
+ * processing stage — which is the steady state of the application.
+ */
+private fun renderingPreview(firstFrameLatencyMs: Long? = null): RenderingDiagnostics =
+    RenderingDiagnostics(
+        pipeline = RenderingPipeline(
+            mode = RenderingMode.PROCESSING_NOT_ACTIVE,
+            capabilities = RenderingCapabilities(
+                apiLevel = 36,
+                surfaceType = SurfaceType.SURFACE_VIEW,
+                processingAttachable = true,
+            ),
+            surfaceBound = true,
+        ),
+        metrics = RenderingMetrics(
+            firstFrameLatencyMs = firstFrameLatencyMs,
+            surfaceAttachCount = 1,
+        ),
+        unavailableReason = ProcessingUnavailableReason.NO_STAGE_IMPLEMENTED,
+    )
+
+/**
  * Builds a pacing state for previews by running the real analysis, so a preview cannot show a
  * cadence the engine would never produce.
  */
@@ -1036,6 +1183,8 @@ private fun PlayerContentPreview() {
                 automaticEnabled = true,
             ),
             framePacing = pacingPreview(videoFps = 23.976f, displayHz = 24f),
+            rendering = renderingPreview(firstFrameLatencyMs = 412L),
+            onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
@@ -1067,6 +1216,8 @@ private fun PlayerErrorPreview() {
                 automaticEnabled = true,
             ),
             framePacing = pacingPreview(videoFps = 24f, displayHz = 60f),
+            rendering = renderingPreview(),
+            onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},

@@ -175,39 +175,63 @@ custom shaders, and any claim that judder has been eliminated or that a display 
 
 ---
 
-## Phase 5 — GPU Rendering Pipeline ⏳
+## Phase 5 — Rendering Pipeline Foundation ✅
 
-**Goal:** own the path from decoded frames to the display.
+**Goal:** establish a safe, measurable rendering-path foundation for future frame processing.
 
-**Scope**
+**Delivered**
 
-- OpenGL ES render path with a Vulkan path behind the same abstraction.
-- Surface, texture and colour-space handling, including HDR transfer functions.
-- Shader-based scaling and pixel format conversion.
-- Replaces the `PlayerView` stage in the player surface and the renderer configuration in the player
-  factory — the two seams Phase 1 exists to provide.
+- The rendering path documented, and the observable parts described at runtime: mode, the surface type
+  read from the view actually in use, capabilities, and a baseline of first-frame latency, surface
+  attach/detach counts and video size.
+- The ownership contract expressed as data and asserted, so a future stage cannot move ownership of
+  the player, the session, the view, the surface or the display preference.
+- A frame-processing seam (`RenderingController`) that is deliberately unbound, with the reason
+  recorded: Media3's own renderer hosts the stage, attaching it costs a per-frame GL copy, and
+  attaching it belongs where the player lives.
+- Frame-metadata API evaluation: what can be observed (first frame, surface and video size, release
+  times) versus what cannot be controlled (release timing) — with no reflection or hidden API anywhere.
+- SurfaceView retained over TextureView on documented trade-offs, and the type read rather than assumed.
+- 24 new unit tests (185 in total).
 
-**Exit criteria**
+**Exit criteria — met, with an explicit limit**
 
-- Identical visual output to the platform path on the reference corpus.
-- Zero GPU-side stalls attributable to buffer ownership over a playback soak.
+- Everything about *describing* the path is satisfied and tested. The foundation owns no player, no
+  renderer, no surface, no `Context` and no coroutine scope, and that is checked mechanically: the
+  package imports nothing from Android, Media3 or the player.
+- *Limit:* **no GPU processing is active**, and none could be without violating this phase's own
+  constraints — attaching Media3's processing stage builds a GL pipeline that copies every frame and
+  adds latency, which the phase forbids. The seam, the vocabulary and the diagnostics are what it
+  contributes instead.
+- *Deviation:* the brief's `FutureVideoProcessingStage` abstraction is realised as `RenderingController`
+  plus `RenderingEnvironment`, because the stage it anticipated is hosted *inside* Media3 rather than
+  sitting between the decoder and a surface this application owns.
+
+**Explicitly out of scope:** interpolation, generated frames, optical flow, shaders, GPU code, and any
+claim that acceleration or processing is active. Attaching a real stage moves to Phase 6.
 
 ---
 
 ## Phase 6 — Frame Interpolation Architecture ⏳
 
-**Goal:** the plumbing that interpolation needs, independent of any particular model.
+**Goal:** the plumbing that interpolation needs, and the render path to carry it.
 
 **Scope**
 
-- Interpolator contract: given two frames and a phase, produce an intermediate frame.
+- The interpolator contract: given two frames and a phase, produce an intermediate frame.
+- Attaching a real stage to Media3's renderer — `ExoPlayer.setVideoEffects` with an `Effect` — driven
+  from the session service, which is where the player lives.
 - Frame queueing, lookahead, and A/V sync when interpolation adds latency.
-- Deterministic fallback to plain playback when the budget is exceeded.
+- The GPU render path and buffer ownership that the stage needs: an OpenGL ES pipeline with Vulkan
+  behind the same abstraction, colour-space and HDR handling, and shader-based scaling and conversion.
+- Deterministic fallback to plain playback when the budget is exceeded, and when a stage cannot attach.
 
 **Exit criteria**
 
-- A trivial (non-AI) interpolator can be enabled end to end without touching player or render code.
-- Playback remains correct when interpolation is toggled mid-stream.
+- A trivial (non-AI) interpolator can be enabled end to end without touching player or screen code.
+- Playback remains correct when interpolation is toggled mid-stream, and the diagnostics report
+  processing as active only while a stage is genuinely attached.
+- Zero GPU-side stalls attributable to buffer ownership over a playback soak.
 
 ---
 

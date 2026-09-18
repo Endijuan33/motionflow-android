@@ -30,15 +30,13 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 4 — Cadence-Aware Frame Pacing. Complete.**
+**Phase 5 — GPU Rendering Pipeline Foundation. Complete.**
 
 The application plays a local video end to end, describes it, asks the display to refresh at a rate
-that suits the video's cadence, and then reports how well those two rates actually line up. The
-metadata engine reads the container and track headers, measures the frame rate from sample timing,
-names the codec and the decoder the platform would use, and reports colour, rotation, audio layout
-and file size — showing "Unknown" for anything it genuinely does not know. The refresh-rate engine
-matches that cadence against the display's own modes and requests one. The pacing engine analyses the
-result and says plainly whether every frame can be held for the same number of refreshes.
+that suits the video's cadence, reports how well those rates line up, and now also describes the
+rendering path itself: which surface Media3 is drawing on, whether a processing stage could sit in
+front of it, and a first-frame timing baseline. **No processing stage is attached**, and nothing is
+rendered by this application.
 
 What exists now:
 
@@ -56,13 +54,15 @@ What exists now:
 - **Phase 4** — cadence-aware frame pacing: a pure classifier for the relationship between the two
   rates, the pattern of frame holds it implies, diagnostics stating whether pacing was actually
   applied, and a seam for the phase that owns a renderer.
+- **Phase 5** — rendering foundation: the path documented and described, the ownership contract
+  encoded and asserted, surface-type reporting read from the view in use, a frame-processing seam
+  that is deliberately unbound, and a first-frame timing baseline.
 
 Explicitly **not** implemented: frame interpolation, AI-generated frames, optical flow, motion
-estimation, OpenGL/Vulkan rendering, custom shaders, decoder replacement and frame synthesis. **A
+estimation, OpenGL or Vulkan rendering, custom shaders, decoder replacement and frame synthesis. **A
 display running at 60 Hz is not a video containing 60 frames**: matching a refresh rate changes how
 often the panel redraws, not how many frames exist. Nothing in MotionFlow claims that a 24 fps video
-becomes a 60 fps one, and **frame pacing is not interpolation** — it can only decide *when* frames
-that already exist are shown, never invent new ones.
+becomes a 60 fps one, that pacing removes judder, or that any GPU processing is running.
 
 ## Technology Stack
 
@@ -339,6 +339,108 @@ Device-specific validation remains necessary for all of it. Whether a display ho
 whether it switches seamlessly, and whether the resulting motion looks better are hardware
 questions, and CI has no display.
 
+## Rendering path
+
+```
+MediaCodec decoder  →  Media3 video renderer  →  SurfaceView  →  display
+   (Media3)              (Media3)                 (Media3, inside the screen's PlayerView)
+```
+
+**This application owns none of that.** It composes a `PlayerView`, hands it a `Player`, and Media3
+decides everything about how frames reach the screen. The foundation in `core/media/rendering`
+*describes* that path and never joins it — it imports nothing from Android, Media3 or the player, and
+if it were deleted, playback would be byte-for-byte the same.
+
+### Ownership contract
+
+Expressed as data (`RenderingOwnership`) so it can be asserted by tests rather than only promised:
+
+| Resource | Owner |
+| --- | --- |
+| ExoPlayer | The player process (one, via the session service) |
+| MediaSession | The media session service |
+| PlayerView | The player screen |
+| Video Surface | Media3 |
+| Processing surface | Nobody — it does not exist |
+| Display preference | The Phase 3 refresh-rate engine |
+
+The point is that attaching a processing stage later must not move ownership of anything that already
+has an owner, and must not give this application a surface of its own. Two tests check exactly that.
+
+### SurfaceView, and why it is not a TextureView
+
+The surface type is *read from the view Media3 actually built* (`getVideoSurfaceView()`), not assumed.
+
+| | SurfaceView (in use) | TextureView |
+| --- | --- | --- |
+| Composition | Composited by the system, separate layer | Composited as part of the view hierarchy |
+| Power and latency | Lower: no extra copy into the view hierarchy | Higher: an extra GPU copy per frame |
+| HDR and protected content | Supported, including secure surfaces | Secure surfaces and some HDR paths unsupported |
+| Transforms and animation | Cannot be transformed or alpha-blended by the view system | Can, which is its only real advantage |
+| API range | 1+ | 14+ |
+
+**TextureView is not used.** Its advantage is being transformable like any other view — useful for
+video in a scrolling list, irrelevant here — and it costs a per-frame copy plus secure-content
+support. There is no measured benefit to switching, and this project does not change the surface type
+on a hunch; if a future phase finds a reason, the change is one line in `VideoStage` and is reported
+automatically, because the type is read rather than assumed.
+
+### Frame metadata: what can be observed, and what cannot
+
+| API | What it gives | Limitation |
+| --- | --- | --- |
+| `Player.Listener.onRenderedFirstFrame()` | That a frame reached the screen | Notification only, once per item |
+| `Player.Listener.onVideoSizeChanged` / `onSurfaceSizeChanged` | Frame and surface dimensions | Notification only |
+| `VideoFrameMetadataListener` | Presentation timestamp, **release time**, format for a frame about to be rendered | **Notification only.** The callback is `void`; the release time is handed to the application and cannot be changed by returning anything |
+| `AnalyticsListener` | Dropped frames, frame-processing offsets, rendered-frame timing, decoder initialisation | ExoPlayer-level; **not forwarded to a `MediaController`**, so a session-based UI cannot see them without a custom session command |
+| `ExoPlayer.setVideoEffects` | Attaching a processing stage | Activates a GPU pipeline — see below |
+
+So: frame *timings* can be observed, but frame *release* cannot be controlled. Any claim otherwise
+would be wrong, and no reflection or hidden API is used anywhere in this project.
+
+### The processing seam, and why nothing is attached
+
+The seam exists, and it is not where it was expected. Media3's own video renderer hosts a
+`VideoFrameProcessor`, driven by `ExoPlayer.setVideoEffects(List<Effect>)` — and the `Effect`
+interface lives in `media3-common`, so no graphics dependency is needed even to name one. A stage
+therefore attaches *inside* Media3, with no custom `RenderersFactory`, no custom `MediaCodec`
+handling and no second surface.
+
+It is deliberately left empty:
+
+- **Attaching is not free.** The renderer builds its GL pipeline the moment effects are supplied, and
+  from then on every frame is copied through a texture — the opposite of "no GPU texture per frame,
+  no unnecessary copy, no added latency". With no effects, `MediaCodecVideoRenderer` skips that path
+  entirely, which is the whole reason this phase attaches nothing.
+- **It has to happen service-side.** The `ExoPlayer` belongs to the media session service, so
+  attaching effects needs a session command. That is infrastructure a later phase builds, not
+  something to bolt on here.
+- **It is not needed to describe the path.** The diagnostics say what is available and what is active
+  without attaching anything.
+
+The result: **`Rendering: Native Media3 · Processing: inactive`**, with `isApplied`-style honesty —
+`processingActive` is only ever true if a stage reports that it attached, and no stage exists.
+
+### Baseline metrics
+
+| Metric | Source | Status |
+| --- | --- | --- |
+| First-frame latency | Measured across `prepare()` to `onRenderedFirstFrame` | Available |
+| Surface attach/detach counts | The player screen's view lifecycle | Available |
+| Video size | `Player.Listener.onVideoSizeChanged` | Available |
+| Rendered and dropped frame counts, frame offsets | `AnalyticsListener` | **Not available**: not forwarded through a session |
+| Per-frame timestamp intervals | `VideoFrameMetadataListener` | **Not available**: ExoPlayer-level only |
+
+This is a baseline, not telemetry: no polling, no per-frame work, no logging of frames, and nothing
+privacy-relevant — no file path, no location, no identifier is recorded. Numbers only change when an
+event arrives, and an identical measurement is not re-published.
+
+### Fallback
+
+Playback never depends on any of this. If a processing stage fails to attach, if the capability
+provider throws, if the surface is never reported, or if the entire foundation were removed, Media3
+plays the video. Each of those paths is covered by a test.
+
 ## Build Instructions
 
 ### GitHub Actions (primary)
@@ -382,7 +484,7 @@ resolves Gradle itself.
 | 2 | **Video Metadata Detection** | Container, codec, frame rate and colour detection. **✅ complete** |
 | 3 | **Adaptive Display Refresh Rate** | Match the display's own modes to the video's cadence. **✅ complete** |
 | 4 | **Frame Pacing Engine** | Cadence analysis and pacing diagnostics. **✅ complete** |
-| 5 | GPU Rendering Pipeline | OpenGL ES / Vulkan render path with a native surface |
+| 5 | **Rendering Pipeline Foundation** | Path described, ownership asserted, processing seam unbound. **✅ complete** |
 | 6 | Frame Interpolation Architecture | Pluggable interpolator contract, frame queueing, A/V sync |
 | 7 | AI-Based Interpolation | RIFE-class models via ONNX Runtime or NCNN, with thermal-aware fallbacks |
 | 8 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
@@ -392,9 +494,18 @@ resolves Gradle itself.
 
 ## Known Limitations
 
+- **Nothing is GPU-processed, and nothing is interpolated.** The rendering foundation describes
+  Media3's own path; it attaches no processing stage, adds no shader, and creates no surface of its
+  own. `Processing: inactive` is the honest state, not a placeholder for something running quietly.
+- **Frame release cannot be controlled.** `VideoFrameMetadataListener` reports a frame's release time
+  and cannot change it; influencing presentation timing needs a custom renderer. See "Rendering path"
+  above.
+- **The baseline is thin on purpose.** Dropped and rendered frame counts are only available from
+  `AnalyticsListener`, which a media session does not forward; consuming them needs a custom session
+  command.
 - **Frame pacing is diagnostic-only.** A 3:2 mismatch is identified and explained, not corrected.
   Nothing in the current architecture can change when a decoded frame is presented without replacing
-  Media3's video renderer, and no claim of judder removal is made anywhere. See "Frame pacing" above.
+  Media3's video renderer, and no claim of judder removal is made anywhere.
 - **Frame pacing is not interpolation.** It can only decide when existing frames are shown. No frames
   are ever synthesised, and a display refresh rate is never presented as a video frame rate.
 - **A refresh-rate request is advisory.** The platform may ignore it — in multi-window, on a device

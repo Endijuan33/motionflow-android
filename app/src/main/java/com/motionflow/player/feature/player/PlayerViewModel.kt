@@ -13,6 +13,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -29,6 +30,10 @@ import com.motionflow.player.core.media.refresh.DisplayCapabilityProvider
 import com.motionflow.player.core.media.refresh.RefreshRateController
 import com.motionflow.player.core.media.refresh.RefreshRateCoordinator
 import com.motionflow.player.core.media.refresh.RefreshRateState
+import com.motionflow.player.core.media.rendering.RenderingCoordinator
+import com.motionflow.player.core.media.rendering.RenderingDiagnostics
+import com.motionflow.player.core.media.rendering.SurfaceType
+import com.motionflow.player.core.media.rendering.android.AndroidRenderingCapabilityProvider
 import com.motionflow.player.core.media.session.MotionFlowMediaSessionService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -84,6 +89,20 @@ class PlayerViewModel(
 
     val framePacingState: StateFlow<FramePacingState> = framePacingCoordinator.state
 
+    /**
+     * What the rendering path is doing, and what it could do.
+     *
+     * The foundation describes Media3's own path; it never joins it. Nothing here can delay a frame,
+     * and if this coordinator were removed, playback would be indistinguishable — which is the
+     * property the tests check.
+     */
+    private val renderingCoordinator = RenderingCoordinator(AndroidRenderingCapabilityProvider())
+
+    val renderingDiagnostics: StateFlow<RenderingDiagnostics> = renderingCoordinator.diagnostics
+
+    /** When the current item was asked to prepare, so first-frame latency can be measured. */
+    private var prepareRequestedAtNanos: Long? = null
+
     private val sourceUri: String? = PlayerRoute.sourceUriOf(savedStateHandle)
 
     private val _uiState = MutableStateFlow(PlayerUiState())
@@ -123,6 +142,22 @@ class PlayerViewModel(
             if (hint == lastFormatHint) return
             lastFormatHint = hint
             observeMetadata(hint)
+        }
+
+        override fun onRenderedFirstFrame() {
+            // Measured across prepare-to-presentation, which is the interval a viewer would notice.
+            val requestedAt = prepareRequestedAtNanos
+            renderingCoordinator.onFirstFrameRendered(
+                latencyMs = requestedAt?.let { (System.nanoTime() - it) / NANOS_PER_MILLI },
+            )
+        }
+
+        override fun onVideoSizeChanged(videoSize: VideoSize) {
+            // Media3 reports 0x0 for a size it does not know; that is not a size.
+            renderingCoordinator.onVideoSizeChanged(
+                width = videoSize.width.takeIf { it > 0 },
+                height = videoSize.height.takeIf { it > 0 },
+            )
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -220,9 +255,26 @@ class PlayerViewModel(
         refreshRateCoordinator.setAutomaticEnabled(enabled)
     }
 
+    /**
+     * Reports that the player screen has a video surface, and what kind.
+     *
+     * The screen owns the view, so it is the only thing that can observe this. Only values cross the
+     * boundary — never the view or its surface.
+     */
+    fun onRenderingSurfaceCreated(surfaceType: SurfaceType) {
+        renderingCoordinator.onSurfaceCreated(surfaceType)
+    }
+
+    /** Reports that the player screen's surface has gone, so no binding outlives it. */
+    fun onRenderingSurfaceReleased() {
+        renderingCoordinator.onSurfaceReleased()
+    }
+
     override fun onCleared() {
         // Restore the display before anything else: the preference belongs to this screen.
         refreshRateCoordinator.detach()
+        // And let go of the surface, so a processing stage could never outlive the view.
+        renderingCoordinator.onSurfaceReleased()
 
         val controller = controller
         if (controller != null) {
@@ -304,6 +356,7 @@ class PlayerViewModel(
             // read finished.
             val title = metadataRepository.document(sourceUri).title
             controller.setMediaItem(mediaItem(sourceUri, title))
+            prepareRequestedAtNanos = System.nanoTime()
             controller.prepare()
             controller.play()
 
@@ -383,5 +436,6 @@ class PlayerViewModel(
     private companion object {
         const val TAG = "MotionFlowPlayback"
         const val POSITION_POLL_INTERVAL_MS = 500L
+        const val NANOS_PER_MILLI = 1_000_000L
     }
 }

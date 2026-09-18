@@ -100,4 +100,17 @@
     <string name="pacing_note_display_too_slow">The display refreshes slower than the video delivers frames.</string>
     <string name="pacing_note_variable_frame_rate">This video changes its frame rate, so no fixed pattern describes it.</string>
     <string name="pacing_note_request_refused">The display could not be moved to a rate that suits this cadence.</string>
+
+    <!-- Rendering diagnostics. Media3's own renderer is always the path here; "processing" describes
+         a stage that would sit in front of it, which this phase never attaches. Nothing in this
+         wording may suggest frames are generated. -->
+    <string name="rendering_label">Rendering: %1$s</string>
+    <string name="rendering_mode_native_media3">Native Media3</string>
+    <string name="rendering_processing_label">Processing: %1$s</string>
+    <string name="rendering_processing_inactive">inactive</string>
+    <string name="rendering_processing_unavailable">unavailable</string>
+    <string name="rendering_processing_active">active</string>
+    <string name="rendering_first_frame">First frame %1$s ms</string>
+    <string name="rendering_note_no_surface">No video surface is attached yet.</string>
+    <string name="rendering_note_stage_unavailable">A processing stage was asked to attach and could not.</string>
 </resources>
