@@ -25,10 +25,11 @@ extracted later, so extraction is a move rather than a redesign.
 | `core/media/metadata` | Describing a media source: container, tracks, frame rate, colour, audio | Compose, playback, navigation |
 | `core/media/pacing` | Classifying the relationship between the video's cadence and the display's, and its diagnostics | Android, Media3, the player, Compose |
 | `core/media/refresh` | Deciding and applying display refresh-rate preferences: the policy, the coordinator, the seams | Compose, Android display APIs |
-| `core/media/rendering` | Describing the rendering path: mode, capabilities, ownership, baseline metrics, and the processing seam | Android, Media3, the player, Compose |
-| `core/media/rendering/android` | The one platform fact the foundation reads: the API level | Everything else |
+| `core/media/rendering` | Describing the rendering path: the surface in use, the ownership contract, baseline metrics | Android, Media3, the player, Compose, processing state |
+| `core/media/processing` | Whether a processing stage is attached, why not when it is not, and the seam a screen asks through | Android, Media3, the player, a `Surface`, a coroutine scope |
+| `core/media/processing/android` | The transport: carrying a processing request over the media session and reading the answer | Ownership of the player or the controller, decision logic |
 | `core/media/refresh/android` | The only code that reads a display or sets a window attribute | Decision logic, Compose |
-| `core/media/session` | Publishing playback to Android through a media session service | UI, feature state |
+| `core/media/session` | Publishing playback to Android through a media session service, and the commands it declares | UI, feature state |
 | `feature/home` | Home destination state and UI, including the media picker | Navigation graph knowledge |
 | `feature/player` | Player destination: playback state, route and screen | Creating or releasing players |
 | `feature/settings` | Settings destination UI | Navigation graph knowledge |
@@ -43,10 +44,16 @@ phases have an agreed home, and so that no phase invents a competing structure:
 | --- | --- | --- |
 | `core/common` | when needed | Dispatchers, qualifiers, small shared primitives |
 | `core/foundation` | when needed | Process-wide services: result types, time source, capability reporting |
-| `rendering` | Phase 5 | OpenGL ES / Vulkan surface and shader pipeline |
-| `interpolation` | Phase 6 | Interpolator contract, frame queueing, A/V sync |
+| `interpolator` | Phase 7 | The interpolator contract: given two frames and a phase, produce one intermediate frame |
 | `inference` | Phase 7 | ONNX Runtime / NCNN model loading and execution |
 | `performance` | Phase 8 | Thermal and battery adaptation |
+
+**There is deliberately no `rendering` module and no GPU pipeline of this application's own.** Phase 6
+established where a processing stage actually attaches: inside Media3's video renderer, through
+`ExoPlayer.setVideoEffects`, with the frames travelling to the display on Media3's own surface. A
+surface and shader pipeline written here would duplicate that path and own a surface the ownership
+contract forbids. It is reserved for the case where a custom renderer becomes genuinely necessary, and
+until then naming it would invite exactly the parallel pipeline this project avoids.
 
 ## 2. Layering and dependency rules
 
@@ -398,9 +405,13 @@ cadence that actually needs pacing — a mismatch or an unsupported pairing.
 MediaCodec decoder  →  Media3 video renderer  →  SurfaceView  →  display
       Media3                Media3                  Media3 (inside the screen's PlayerView)
 
-        RenderingCoordinator  ←  surface created/released, first frame, video size, API level
+        RenderingCoordinator  ←  surface created/released, first frame, video size
                 │
-                └── RenderingController   (seam, unbound: nothing to attach)
+                └── RenderingDiagnostics  (surface + metrics: a description, nothing more)
+
+        ProcessingCoordinator ←  surface bound/released, the controller, the two rates
+                │
+                └── MediaSessionProcessingController  →  session command  →  PlayerProcessingEndpoint
 ```
 
 ### What the foundation is, and is not
@@ -413,6 +424,12 @@ Remove the whole package and playback is unchanged.
 There is no coroutine scope either: every input is an event that arrives rarely, so a description is
 published synchronously from the event that caused it. Nothing can delay a frame, and there is no
 interval in which a stale description could be published.
+
+Whether a processing stage is attached is deliberately **not** answered here. Phase 5 tried to answer
+it with a surface-lifecycle seam, and Phase 6 established that was the wrong shape: the effects
+pipeline has to exist before `prepare()`, so a stage is never attached by a surface appearing. That
+question now has one owner, `core/media/processing`, and this package describes only what frames
+arrive at.
 
 ### Ownership, as data
 
@@ -428,32 +445,9 @@ interval in which a stale description could be published.
 | Display preference | The Phase 3 refresh-rate engine |
 
 The property being protected is that adding a processing stage later must not move ownership of
-anything that already has an owner, and must not give the application a surface of its own. Two tests
-check it, including that the screen composes the view without owning the surface inside it.
-
-### The processing seam lives inside Media3, not beside it
-
-This is the phase's substantive finding. Media3's video renderer hosts a `VideoFrameProcessor`, driven
-by `ExoPlayer.setVideoEffects(List<Effect>)`, and the `Effect` interface is in `media3-common`. A
-processing stage therefore attaches inside the renderer — no custom `RenderersFactory`, no custom
-`MediaCodec` handling, no second surface.
-
-It is left empty on purpose:
-
-- **Attaching costs per-frame work.** `MediaCodecVideoRenderer` builds its GL pipeline only once
-  effects are supplied, and from that point every frame is copied through a texture. With no effects
-  the whole path is skipped. This phase's constraints — no GPU texture per frame, no unnecessary copy,
-  no added latency — are exactly what attaching would violate.
-- **It belongs where the player lives.** The `ExoPlayer` is owned by the session service, so
-  attaching is a service-side operation needing a session command. That is infrastructure a later
-  phase builds.
-- **It is not needed to describe the path.** Diagnostics can report availability and activity without
-  attaching anything.
-
-`RenderingController` is that seam: `onSurfaceAvailable` is handed a `RenderingEnvironment` of plain
-values — an API level and a surface type — and `onSurfaceLost` takes the binding away. A fake proves
-the coordinator offers the environment on bind, takes it back on release, and stays sane when a stage
-refuses or throws.
+anything that already has an owner, and must not give the application a surface of its own. Phase 6 did
+not move a single row: the request path added no player, no session, no surface and no display
+preference, and tests still hold the contract to that.
 
 ### What can be observed, and what cannot
 
@@ -462,20 +456,116 @@ refuses or throws.
 | `Player.Listener.onRenderedFirstFrame`, `onVideoSizeChanged`, `onSurfaceSizeChanged` | That a frame reached the screen; frame and surface dimensions | Notification only. All three are forwarded through a `MediaController`, so a session-based UI can use them — verified in `MediaSessionImpl` |
 | `VideoFrameMetadataListener` | Presentation timestamp, release time, format | **Notification only.** The callback is `void`; the release time cannot be changed by returning anything |
 | `AnalyticsListener` | Dropped frames, frame-processing offsets, rendered-frame timing, decoder initialisation | ExoPlayer-level, **not forwarded through a session**, so consuming them needs a custom session command |
-| `ExoPlayer.setVideoEffects` | Attaching a processing stage | Activates a GPU pipeline, as above |
+| `ExoPlayer.setVideoEffects` | Attaching a processing stage | Unreachable from a screen, and unusable without the effects module — see section 9 |
 
 So frame timings can be observed and frame release cannot be controlled. The metrics model reflects
 exactly that split rather than listing fields it cannot fill.
 
 ### Why the foundation owns no scope, no context and no surface
 
-`AndroidRenderingCapabilityProvider` reports one thing: `Build.VERSION.SDK_INT`. It needs no
-`Context`, and the foundation never holds a `Window`, a `Surface` or an `Activity` — only an enum and
-a number cross the boundary. The GPU is deliberately not probed: whether a stage can run is decided by
-whether Media3's renderer can host one, and a second opinion computed elsewhere could only disagree
-with the renderer that has to do the work.
+It reads no platform fact at all any more: the surface type and the metrics arrive as events from the
+things that observe them, and it never holds a `Window`, a `Surface` or an `Activity`. Only an enum and
+four numbers cross the boundary, and the GPU is deliberately not probed — whether a stage can run is
+decided by Media3's renderer, and a second opinion computed elsewhere could only disagree with the
+renderer that has to do the work.
 
-## 9. Design system
+## 9. Frame processing
+
+### Where a stage attaches, and where it does not
+
+A processing stage goes *inside* Media3's video renderer, not beside it. `ExoPlayer.setVideoEffects`
+supplies effects to the renderer's own `VideoFrameProcessor`, and `Effect` is a marker interface in
+`media3-common`. There is no custom `RenderersFactory`, no `MediaCodec` handling, no EGL context and no
+surface owned by this application — and after Phase 6 there is no seam of ours for a stage to sit in
+either, because a second one could only disagree with the renderer doing the work.
+
+### The two facts that keep the seam empty
+
+Both were verified against Media3 1.11.1's source, and both are stronger than "it would cost
+something":
+
+1. **The API cannot be called from this build at all.** `ExoPlayerImpl.setVideoEffects` opens with
+   `Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")` and throws
+   `IllegalStateException("Could not find required lib-effect dependencies.")` when that lookup fails.
+   The guard runs on **every** call, so `setVideoEffects(emptyList())` throws too: there is no
+   defensive "clear the effects" call available either. Using the API means linking
+   `androidx.media3:media3-effect`, a graphics module whose shaders build the frame-copy pipeline.
+2. **The pipeline is armed by the first call, not by a non-empty list.** The method's contract requires
+   a call before `prepare()`; `MediaCodecVideoRenderer.onEnabled` builds the video sink whenever its
+   effects field is non-null, and `onReset()` clears the flag so a *later* enable can build it then.
+   Attaching on request therefore cannot be the call that creates the pipeline, and calling it early to
+   "have it ready" would put every session — including sessions where nobody asks for processing — on a
+   pipeline that copies every frame.
+
+Neither can be worked around without violating the phase's own constraints, so the endpoint refuses and
+names the reason. `EFFECTS_MODULE_ABSENT` is the honest answer to "why is processing not active", and
+it is the first thing Phase 7 changes.
+
+### The request path
+
+`ProcessingSessionContract` defines two custom commands, one per request, and `ProcessingSessionCallback`
+declares them to a trusted controller and answers them. That route exists because the API is on
+`ExoPlayer`, which a screen cannot reach: `Player` declares no effects method, so a `MediaController`
+has no way to ask. The command travels
+
+```
+player screen → view model → MediaSessionProcessingController → MediaSession.sendCustomCommand
+              → ProcessingSessionCallback (service, application thread) → MotionFlowPlayer
+              → PlayerProcessingEndpoint
+```
+
+and comes back as a `SessionResult` carrying an outcome and a reason.
+
+Three details are worth keeping:
+
+- **Declaration is the gate.** `ConnectionResult.DEFAULT_SESSION_COMMANDS` holds the predefined session
+  commands and no custom command, so a controller that is not offered this one is refused before any
+  callback runs. Only a trusted controller is offered it; the system's media controls keep the read-only
+  set they are entitled to, and this application never gains a way to change the rendering path from
+  outside.
+- **The service answers, because the service owns the player.** `onCustomCommand` runs on the
+  application thread, which is the thread the `ExoPlayer` requires, so the request reaches the engine
+  without any thread hand-off to get wrong. The callback reads the engine through a lambda rather than
+  capturing it, so it can never keep a released player alive.
+- **The client refuses early where it can.** With no surface there is nothing to attach to, and a
+  command the session does not offer cannot be answered — both are recorded as structured answers
+  rather than sent, so no caller waits for a reply that will not come, and no request is retried.
+
+### The state model
+
+`ProcessingMode` has five values, and only one of them means a stage is in the path:
+
+| Mode | Meaning | Reachable how |
+| --- | --- | --- |
+| `NATIVE` | Nothing reported yet; the path is Media3's own | The initial value |
+| `PROCESSING_UNAVAILABLE` | No surface, so nothing to render through | A surface release |
+| `PROCESSING_INACTIVE` | A surface is bound, a stage could attach, none does | A surface binding |
+| `PROCESSING_ACTIVE` | A stage is attached | Only from a player's report |
+| `PROCESSING_FAILED` | The last request could not be honoured | A refusal or an unreachable request |
+
+`ProcessingReason` carries the specific cause — `NO_SURFACE`, `EFFECTS_MODULE_ABSENT`,
+`NO_STAGE_IMPLEMENTED`, `REQUEST_REFUSED`, `COMMAND_UNAVAILABLE`, `TRANSPORT_FAILED` — so an inactive
+state is never a shrug.
+
+The invariant the tests hold is that `effectAttached` follows a **report** and never a request: no
+number of enable requests, no phrasing, and no failure can produce a stage that no player confirmed.
+The counters count attachments a player confirmed, and the model has no field for an output frame rate.
+
+### What it owns, and what it must not
+
+| Thing | Owns? |
+| --- | --- |
+| An `ExoPlayer` | No. It borrows the session connection the screen already has |
+| A `Surface` | No. The ownership contract's `PROCESSING_SURFACE` row still says `NOBODY` |
+| A rendering pipeline | No. Nothing is attached, and no graphics dependency is linked |
+| A coroutine scope | `ProcessingCoordinator` has none; `MediaSessionProcessingController` suspends on its caller's scope, confined to the application thread |
+| An `Activity`, `Window`, `View` or `Context` | No. Plain values cross every boundary |
+
+The processing package in `main` imports only its own package and `kotlinx.coroutines`; the Media3
+types live in `core/media/session` (the contract and the callback) and
+`core/media/processing/android` (the transport). Both are enforced by the pre-push check.
+
+## 10. Design system
 
 The theme is the contract between design and code, so it is centralised from the start:
 
@@ -503,7 +593,7 @@ Design decisions worth keeping:
 - **Depth comes from tonal surfaces, not shadows.** Elevation stays low by design.
 - **Motion is short.** Chrome animates around moving pictures; the token scale caps at 400 ms.
 
-## 10. Build architecture
+## 11. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -526,13 +616,13 @@ Design decisions worth keeping:
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 11. Testing strategy
+## 12. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
-| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching, the refresh-rate matching policy and its coordinator, the cadence classification and its coordinator, the rendering foundation's state machine and ownership contract |
+| JVM unit tests | `:app:testDebugUnitTest`, every push | Design tokens, contrast guarantees, route round-tripping, player state and error mapping, frame-rate arithmetic, metadata formatting and classification, repository caching, the refresh-rate matching policy and its coordinator, the cadence classification and its coordinator, the rendering foundation's state machine and ownership contract, and the processing state machine, endpoint and wire contract |
 | Android Lint | `:app:lintDebug`, every push | Correctness, API misuse, resource and manifest problems |
-| Instrumented tests | not wired up | Would cover surfaces, codecs, session binding and whether a display actually changes mode — CI has no emulator |
+| Instrumented tests | not wired up | Would cover surfaces, codecs, session binding, whether a display actually changes mode, and whether a session command reaches a real player — CI has no emulator |
 
 The rule for this repository: **test what does not need a device, and test what will silently break.**
 Design tokens, hand-written mappings, the media-URI route round trip, the frame-rate arithmetic and
@@ -548,32 +638,43 @@ are pure or fake-driven. Refresh rate: the matching policy is a pure function, a
 driven through fake controller and capability providers, so refusals, unknown capabilities and the
 lifecycle rules are all covered without a display. That is what the two interfaces are for. Pacing
 needs no fakes for its arithmetic at all — it has no I/O — and its coordinator is driven by feeding it
-cadences and refresh states; a bound controller is faked to prove the seam. The rendering foundation
-has no I/O of its own either: a fake capability provider covers a device that refuses to report, and a
-fake stage covers a stage that refuses, or throws, which is how the "playback is unaffected" claims
-are checked rather than asserted.
+cadences and refresh states; a bound controller is faked to prove the seam.
 
-## 12. Deliberately absent
+Processing follows the same pattern with one addition: its *transport* is an interface
+(`ProcessingController`), so the coordinator can be driven through a fake that refuses, attaches,
+answers nothing, or throws — which is how the failure ladder is covered without a session. The
+transport's own implementation is not unit tested, because a `MediaController` cannot exist off-device;
+what is tested instead is the wire codec (`ProcessingSessionContract.decode`) and the rule that makes
+the client refuse locally, so the only untested lines are the three that read a `Bundle`. The two
+cross-engine tests exist for a different reason: they assert that a processing request cannot move the
+display decision or the cadence classification, which is a property of the boundary rather than of
+either engine.
+
+The rendering foundation has no I/O left to fake: the surface type and the metrics are events handed to
+it, so its state machine is tested directly, and the GPU is not probed anywhere.
+
+## 13. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 
-- **Frame interpolation, inference runtimes, native code.** Phases 6 and 7. No stub interfaces are
-  defined for them, because an interface written before the problem is understood is a liability.
-  Nothing in the pacing engine implies they exist: it decides when existing frames are shown, not how
-  many frames there are.
+- **Frame interpolation, inference runtimes, native code.** Phase 7. No stub interfaces are defined
+  for them, because an interface written before the problem is understood is a liability. Nothing in
+  the pacing engine implies they exist: it decides when existing frames are shown, not how many frames
+  there are.
 - **Frame release control.** Pacing classifies cadences but cannot change presentation timing, because
   release happens inside Media3's video renderer and the app-facing hook only reports it. The
   classification and the `FramePacingController` seam are the foundation for whichever phase owns a
   renderer; until then a 3:2 mismatch is identified, explained and left alone.
-- **An attached processing stage.** Media3's own renderer hosts one — `ExoPlayer.setVideoEffects` with
-  an `Effect` from `media3-common` — and nothing supplies effects, because attaching builds a GL
-  pipeline that copies every frame through a texture. The seam, the vocabulary and the ownership
-  contract are in place; supplying effects belongs to Phase 6, and it has to happen in the session
-  service rather than in a screen.
-- **A custom rendering pipeline.** `PlayerView` and Media3's default renderers are used deliberately:
-  they are the correct, low-risk path, and the reference behaviour any future pipeline is judged
-  against. Phase 5 established that a processing stage can be attached *without* replacing them, which
-  makes a custom renderer less likely to be needed at all.
+- **An attached processing stage.** Phase 6 built and verified the route to one — the request path, the
+  endpoint, the state model — and attaches nothing, because attaching is not a small step: Media3's
+  `setVideoEffects` refuses to run without `androidx.media3:media3-effect` on the classpath, and the
+  effects pipeline has to be armed before `prepare()`, which puts every session on a frame-copying
+  pipeline whether or not anyone asks for processing. The refusal names both facts at runtime.
+- **A custom rendering pipeline, and any graphics dependency.** `PlayerView` and Media3's default
+  renderers are used deliberately: they are the correct, low-risk path, and the reference behaviour any
+  future pipeline is judged against. Phase 5 established that a processing stage attaches *without*
+  replacing them, so a custom renderer is less likely to be needed at all — and Phase 6 established
+  that a seam beside the renderer would only be able to disagree with it.
 - **Calling `Surface.setFrameRate` ourselves.** Not needed, and deliberately not done: Media3's
   `VideoFrameReleaseHelper` already calls it on API 30+, with `FRAME_RATE_COMPATIBILITY_FIXED_SOURCE`
   for a steady source and a change-frame-rate-only-if-seamless strategy. A second caller would

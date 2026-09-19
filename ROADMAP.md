@@ -203,52 +203,91 @@ custom shaders, and any claim that judder has been eliminated or that a display 
   constraints — attaching Media3's processing stage builds a GL pipeline that copies every frame and
   adds latency, which the phase forbids. The seam, the vocabulary and the diagnostics are what it
   contributes instead.
-- *Deviation:* the brief's `FutureVideoProcessingStage` abstraction is realised as `RenderingController`
-  plus `RenderingEnvironment`, because the stage it anticipated is hosted *inside* Media3 rather than
-  sitting between the decoder and a surface this application owns.
+- *Deviation:* the brief's `FutureVideoProcessingStage` abstraction was realised as a
+  surface-lifecycle seam, because the stage it anticipated is hosted *inside* Media3 rather than
+  sitting between the decoder and a surface this application owns. Phase 6 verified that shape was
+  wrong — the effects pipeline has to be armed before `prepare()`, not per surface — and replaced it
+  with a request-driven endpoint.
 
 **Explicitly out of scope:** interpolation, generated frames, optical flow, shaders, GPU code, and any
-claim that acceleration or processing is active. Attaching a real stage moves to Phase 6.
+claim that acceleration or processing is active. Attaching a real stage moves to Phase 7.
 
 ---
 
-## Phase 6 — Frame Interpolation Architecture ⏳
+## Phase 6 — Frame Processing Architecture ✅
 
-**Goal:** the plumbing that interpolation needs, and the render path to carry it.
+**Goal:** prove that a processing stage has a safe route into the video path, and that asking for one
+cannot break playback.
+
+**Delivered**
+
+- Verification, against Media3 1.11.1 source, of what the official effect API actually permits:
+  `Effect` is a marker interface in `media3-common`; `ExoPlayer.setVideoEffects` is on `ExoPlayer` and
+  not on `Player`, so it is unreachable from a screen; and it throws
+  `IllegalStateException("Could not find required lib-effect dependencies.")` unless
+  `androidx.media3:media3-effect` is on the classpath — including for an empty list.
+- A processing architecture with one vocabulary: mode, reason, request, outcome, capabilities and
+  diagnostics, in an Android-free package that owns no player, no surface and no scope.
+- A verified request path — screen → view model → declared session command → session service → the
+  process-owned player — with the command offered only to a trusted controller and answered where the
+  player lives.
+- A player-side endpoint that refuses every enable with the reason that applies, and confirms the
+  native path for every disable, so the phase's fallback guarantee is literal rather than aspirational.
+- The Phase 5 rendering foundation reduced to what it can honestly describe — the surface and its
+  metrics — so exactly one component decides processing state.
+- 30 new unit tests (215 in total), including the two cross-engine checks that a processing request
+  cannot move the display or the cadence classification.
+
+**Exit criteria — met, with an explicit limit**
+
+- The transport is complete, tested at both ends, and covered by tests for a refusal, an unreachable
+  session, an unavailable command, a missing surface, a repeated request and a player that throws. In
+  every one of those cases playback continues on Media3's path with position, speed, repeat mode,
+  audio and surface untouched.
+- *Limit:* **no effect is attached, and none can be from this build.** Attaching one requires
+  `androidx.media3:media3-effect`, which the effect API's own guard demands on every call, and it
+  requires the pipeline to be armed before `prepare()` — so an on-demand attach would mean installing
+  a pass-through graphics pipeline for every session, copying every frame for people who never ask for
+  processing. Neither is compatible with this phase's constraint that nothing be attached that is not
+  needed, so the endpoint refuses, names the reason, and the seam stays empty.
+- *Deviation:* the roadmap itself said this phase would attach a stage. It could not, for the two
+  reasons above, so what it delivers instead is the verified route, the diagnostics that say which
+  fact blocks it, and a refusal that is impossible to mistake for a failure of playback.
+
+**Explicitly out of scope:** interpolation, generated frames, optical flow, shaders, GPU code,
+graphics dependencies, and any claim that processing or acceleration is active.
+
+---
+
+## Phase 7 — Interpolation Stage and AI Interpolation ⏳
+
+**Goal:** a stage that actually attaches, and then real quality interpolation behind it.
 
 **Scope**
 
+- Attaching a real stage, which Phase 6 made a single documented change: add
+  `androidx.media3:media3-effect` to the version catalog, arm the effects pipeline in
+  `MotionFlowPlayer` before the first `prepare()` — the cost of arming is a per-frame copy for the rest
+  of the session, so it must be a deliberate choice rather than a side effect — and replace
+  `PlayerProcessingEndpoint`'s enable branch with `ExoPlayer.setVideoEffects`. Nothing else moves.
 - The interpolator contract: given two frames and a phase, produce an intermediate frame.
-- Attaching a real stage to Media3's renderer — `ExoPlayer.setVideoEffects` with an `Effect` — driven
-  from the session service, which is where the player lives.
-- Frame queueing, lookahead, and A/V sync when interpolation adds latency.
-- The GPU render path and buffer ownership that the stage needs: an OpenGL ES pipeline with Vulkan
-  behind the same abstraction, colour-space and HDR handling, and shader-based scaling and conversion.
+- Frame queueing, lookahead, and A/V sync when a stage adds latency.
+- Buffer ownership for the stage: colour-space and HDR handling, and shader-based scaling and
+  conversion, with Vulkan behind the same abstraction.
+- RIFE-class model execution via ONNX Runtime or NCNN, with model loading, quantization and hardware
+  delegation (GPU/NPU) where available.
+- Per-device throughput measurement and dynamic quality selection.
 - Deterministic fallback to plain playback when the budget is exceeded, and when a stage cannot attach.
 
 **Exit criteria**
 
-- A trivial (non-AI) interpolator can be enabled end to end without touching player or screen code.
-- Playback remains correct when interpolation is toggled mid-stream, and the diagnostics report
-  processing as active only while a stage is genuinely attached.
+- A trivial (non-AI) interpolator can be enabled end to end without touching player or screen code,
+  and the diagnostics report processing as active only while a stage is genuinely attached.
+- Playback remains correct when interpolation is toggled mid-stream, with position, speed, repeat mode
+  and audio preserved, and a disable request returning the player to native rendering.
+- Sustained real-time interpolation at the target output rate on reference hardware, with graceful
+  fallback when inference cannot keep up.
 - Zero GPU-side stalls attributable to buffer ownership over a playback soak.
-
----
-
-## Phase 7 — AI-Based Interpolation ⏳
-
-**Goal:** real quality interpolation on device.
-
-**Scope**
-
-- RIFE-class model execution via ONNX Runtime or NCNN.
-- Model loading, quantization and hardware delegation (GPU/NPU) where available.
-- Per-device throughput measurement and dynamic quality selection.
-
-**Exit criteria**
-
-- Sustained real-time interpolation at the target output rate on reference hardware.
-- Graceful fallback to non-interpolated playback when inference cannot keep up.
 
 ---
 

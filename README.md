@@ -30,13 +30,14 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 5 — GPU Rendering Pipeline Foundation. Complete.**
+**Phase 6 — Frame Processing Architecture. Complete.**
 
 The application plays a local video end to end, describes it, asks the display to refresh at a rate
-that suits the video's cadence, reports how well those rates line up, and now also describes the
-rendering path itself: which surface Media3 is drawing on, whether a processing stage could sit in
-front of it, and a first-frame timing baseline. **No processing stage is attached**, and nothing is
-rendered by this application.
+that suits the video's cadence, reports how well those rates line up, describes the rendering path
+itself, and now also has a verified route for a future processing stage — a session command that
+reaches the process-owned player — with diagnostics that say precisely why no stage is attached.
+**No processing stage is attached**, no graphics dependency is present, and nothing is rendered by
+this application.
 
 What exists now:
 
@@ -55,8 +56,11 @@ What exists now:
   rates, the pattern of frame holds it implies, diagnostics stating whether pacing was actually
   applied, and a seam for the phase that owns a renderer.
 - **Phase 5** — rendering foundation: the path documented and described, the ownership contract
-  encoded and asserted, surface-type reporting read from the view in use, a frame-processing seam
-  that is deliberately unbound, and a first-frame timing baseline.
+  encoded and asserted, surface-type reporting read from the view in use, and a first-frame timing
+  baseline.
+- **Phase 6** — frame processing architecture: the official Media3 effect API verified against its
+  own source, a processing state model with one owner, a session-command request path from the screen
+  to the engine, and diagnostics that name the exact reason no stage is attached.
 
 Explicitly **not** implemented: frame interpolation, AI-generated frames, optical flow, motion
 estimation, OpenGL or Vulkan rendering, custom shaders, decoder replacement and frame synthesis. **A
@@ -398,28 +402,16 @@ automatically, because the type is read rather than assumed.
 So: frame *timings* can be observed, but frame *release* cannot be controlled. Any claim otherwise
 would be wrong, and no reflection or hidden API is used anywhere in this project.
 
-### The processing seam, and why nothing is attached
+### Where a processing stage attaches
 
-The seam exists, and it is not where it was expected. Media3's own video renderer hosts a
-`VideoFrameProcessor`, driven by `ExoPlayer.setVideoEffects(List<Effect>)` — and the `Effect`
-interface lives in `media3-common`, so no graphics dependency is needed even to name one. A stage
-therefore attaches *inside* Media3, with no custom `RenderersFactory`, no custom `MediaCodec`
-handling and no second surface.
+Inside Media3, not beside it. Media3's own video renderer hosts a `VideoFrameProcessor`, driven by
+`ExoPlayer.setVideoEffects(List<Effect>)`, so a stage needs no custom `RenderersFactory`, no custom
+`MediaCodec` handling and no second surface. `Effect` is a marker interface in `media3-common`, so
+even naming one costs no graphics dependency.
 
-It is deliberately left empty:
-
-- **Attaching is not free.** The renderer builds its GL pipeline the moment effects are supplied, and
-  from then on every frame is copied through a texture — the opposite of "no GPU texture per frame,
-  no unnecessary copy, no added latency". With no effects, `MediaCodecVideoRenderer` skips that path
-  entirely, which is the whole reason this phase attaches nothing.
-- **It has to happen service-side.** The `ExoPlayer` belongs to the media session service, so
-  attaching effects needs a session command. That is infrastructure a later phase builds, not
-  something to bolt on here.
-- **It is not needed to describe the path.** The diagnostics say what is available and what is active
-  without attaching anything.
-
-The result: **`Rendering: Native Media3 · Processing: inactive`**, with `isApplied`-style honesty —
-`processingActive` is only ever true if a stage reports that it attached, and no stage exists.
+What that API does *not* allow is the subject of the next section. The short version: this build
+attaches nothing, and could not attach anything, so `core/media/rendering` describes the path and the
+processing report says why it is empty.
 
 ### Baseline metrics
 
@@ -437,9 +429,84 @@ event arrives, and an identical measurement is not re-published.
 
 ### Fallback
 
-Playback never depends on any of this. If a processing stage fails to attach, if the capability
-provider throws, if the surface is never reported, or if the entire foundation were removed, Media3
-plays the video. Each of those paths is covered by a test.
+Playback never depends on any of this. If the surface is never reported, or if the entire foundation
+were removed, Media3 plays the video. Each of those paths is covered by a test.
+
+## Frame processing
+
+```
+player screen  →  view model  →  session command  →  session service  →  MotionFlowPlayer
+                                                                              │
+                                                              PlayerProcessingEndpoint
+                                                          (attaches nothing, and says why)
+```
+
+**No processing stage is attached in this version**, and there is no graphics dependency in the build.
+What exists is the route a stage would take and an honest account of why the route ends where it does.
+
+### The verified facts
+
+Four things were established from Media3 1.11.1's own source rather than from documentation or
+assumption, and together they decide the outcome:
+
+| Fact | Evidence | Consequence |
+| --- | --- | --- |
+| `setVideoEffects` needs `androidx.media3:media3-effect` at runtime | `ExoPlayerImpl.setVideoEffects` runs `Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")` and throws `IllegalStateException("Could not find required lib-effect dependencies.")` when it fails — on every call, including an empty list | The API cannot be called at all from this build, so the seam stays unbound rather than pretending to try |
+| The effects pipeline must exist before `prepare()` | The method's contract: "must be called at least once before calling `prepare()` in order to set up the effects pipeline" | Attaching on request cannot be the call that creates the pipeline; supporting on-demand attachment means installing a pass-through pipeline for every session, copying every frame for people who never ask for processing |
+| The pipeline is created from a non-null effects list, not a non-empty one | `MediaCodecVideoRenderer.onEnabled` builds the video sink while `videoEffects != null`, and `onReset` clears the flag so a later enable can build it then | Even `setVideoEffects(emptyList())` is not a no-op: it arms the pipeline for the next renderer enable. Calling it to "clear" effects would switch playback onto the GL path |
+| `setVideoEffects` is on `ExoPlayer`, not on `Player` | `Player` declares no such method, so a `MediaController` cannot reach it | The request must travel as a session command to the process-owned player, which is what the architecture now provides |
+
+### The request path
+
+`core/media/session/ProcessingSessionContract` defines two custom commands — one to enable, one to
+disable — and `ProcessingSessionCallback` declares them to a **trusted** controller and handles them.
+Nothing else in the application is offered them: the system's media controls keep the read-only
+command set they are entitled to.
+
+A request travels: player screen → view model → `MediaSessionProcessingController` (which borrows the
+session connection, never the player) → `MediaSession.sendCustomCommand` → the service's callback →
+`MotionFlowPlayer` → `PlayerProcessingEndpoint`, which answers. A disable request is answered by
+confirming the state that already holds, which is what makes the fallback guarantee literal: after any
+refusal, a disable request leaves the player on Media3's own path.
+
+### What the diagnostics say
+
+| Mode | Meaning |
+| --- | --- |
+| `native` | Nothing has been reported yet; the path is Media3's own |
+| `unavailable` | There is no video surface, so there is nothing for a stage to render through |
+| `inactive` | A surface is bound, a stage could be attached, and none is — the steady state |
+| `active` | A player reported that a stage attached. Reachable only from such a report |
+| `failed` | The last request could not be honoured, with the reason it could not |
+
+Reasons are specific rather than generic: `no_surface`, `effects_module_absent` (this build links no
+effect module), `no_stage_implemented`, `request_refused`, `command_unavailable` (the session does not
+offer the command), `transport_failed` (the request never arrived). The panel shows the line
+`Rendering: Native Media3 · Processing: inactive · First frame 412 ms` and one explanatory note, so a
+reader never has to guess which of several causes applies.
+
+The counters count attachment: how often a player confirmed a stage, how often one stopped being
+attached, and how many requests were made. They cannot report a stage nobody confirmed, and there is no
+field anywhere for an output frame rate — an effect that copies a frame is not a rate.
+
+### Fallback
+
+Processing is optional by construction. A refusal, an unreachable session, a command the session does
+not offer, a missing surface, a repeated request, a player that throws — each is a recorded answer, and
+playback continues with position, play/pause state, repeat mode, playback speed, audio and the video
+surface untouched. No request is retried, nothing is polled, and no failure can make Media3's path
+unavailable.
+
+### Known limitations
+
+- **Nothing is attached**, so `active` is not reachable in this version — by design, and documented
+  above rather than papered over.
+- **No interface control sends a request.** A button that could never succeed would imply a capability
+  that does not exist. The path is exercised by tests and is what Phase 7 drives.
+- **The transport is verified by unit tests and by compilation, not on a device.** CI has no display
+  and no session, so the command's round trip through a real `MediaSession` on real hardware is still
+  to be observed.
+
 
 ## Build Instructions
 
@@ -484,9 +551,9 @@ resolves Gradle itself.
 | 2 | **Video Metadata Detection** | Container, codec, frame rate and colour detection. **✅ complete** |
 | 3 | **Adaptive Display Refresh Rate** | Match the display's own modes to the video's cadence. **✅ complete** |
 | 4 | **Frame Pacing Engine** | Cadence analysis and pacing diagnostics. **✅ complete** |
-| 5 | **Rendering Pipeline Foundation** | Path described, ownership asserted, processing seam unbound. **✅ complete** |
-| 6 | Frame Interpolation Architecture | Pluggable interpolator contract, frame queueing, A/V sync |
-| 7 | AI-Based Interpolation | RIFE-class models via ONNX Runtime or NCNN, with thermal-aware fallbacks |
+| 5 | **Rendering Pipeline Foundation** | Path described, ownership asserted. **✅ complete** |
+| 6 | **Frame Processing Architecture** | Effect API verified, request path proven, no stage attached. **✅ complete** |
+| 7 | Interpolation Stage and AI Interpolation | A stage that attaches, then RIFE-class models with thermal-aware fallbacks |
 | 8 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
 | 9 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
 
@@ -494,9 +561,14 @@ resolves Gradle itself.
 
 ## Known Limitations
 
-- **Nothing is GPU-processed, and nothing is interpolated.** The rendering foundation describes
-  Media3's own path; it attaches no processing stage, adds no shader, and creates no surface of its
-  own. `Processing: inactive` is the honest state, not a placeholder for something running quietly.
+- **Nothing is GPU-processed, and nothing is interpolated.** `core/media/rendering` describes Media3's
+  own path, and `core/media/processing` says whether a stage is attached. Nothing is attached: no
+  shader, no graphics dependency, no surface of this application's own. `Processing: inactive` is the
+  honest state, not a placeholder for something running quietly.
+- **A processing stage cannot be attached from this build.** `ExoPlayer.setVideoEffects` requires
+  `androidx.media3:media3-effect` on the runtime classpath and is guarded by its own check, and the
+  effects pipeline has to be armed before `prepare()`. The request path is complete and tested; the
+  attachment is Phase 7's work. See "Frame processing" above.
 - **Frame release cannot be controlled.** `VideoFrameMetadataListener` reports a frame's release time
   and cannot change it; influencing presentation timing needs a custom renderer. See "Rendering path"
   above.
