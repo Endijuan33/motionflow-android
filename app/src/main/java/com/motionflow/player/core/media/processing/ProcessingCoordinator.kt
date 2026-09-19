@@ -93,6 +93,10 @@ class ProcessingCoordinator {
      * Two refusals are made here rather than sent: with no surface there is nothing to attach to, and
      * with no controller there is nobody to ask. Both are recorded as structured answers, so a caller
      * cannot tell an impossible request from an unreachable one by the absence of a result.
+     *
+     * A disable with no surface *is* still sent. The surface is not what makes a disable possible:
+     * leaving the native path has to work whether the view is gone or not, or the fallback would have a
+     * hole in it. The asymmetry is deliberate rather than an oversight.
      */
     suspend fun request(request: ProcessingRequest) {
         requestCount++
@@ -192,16 +196,34 @@ class ProcessingCoordinator {
     }
 
     private fun modeFor(): ProcessingMode = when {
-        // Nothing has been reported yet, so there is nothing to describe but Media3's own path.
-        !surfaceReported -> ProcessingMode.NATIVE
-        !surfaceBound -> ProcessingMode.PROCESSING_UNAVAILABLE
+        // A stage reported attached outranks everything: if the surface has gone since, the release
+        // that took it is what clears this.
         attached -> ProcessingMode.PROCESSING_ACTIVE
+
+        // Nothing has been reported about the surface, so the report stays the default one. A request
+        // may still have been answered — its reason appears alongside, because a refusal is worth
+        // showing even when the surface state was never described.
+        !surfaceReported -> ProcessingMode.NATIVE
+
+        // A surface reported absent is the one thing that rules a stage out.
+        !surfaceBound -> ProcessingMode.PROCESSING_UNAVAILABLE
+
         lastRequestFailed == true -> ProcessingMode.PROCESSING_FAILED
+
         else -> ProcessingMode.PROCESSING_INACTIVE
     }
 
+    /**
+     * Why the mode is what it is.
+     *
+     * Derived from the mode rather than stored beside it, so the two cannot contradict each other.
+     * [ProcessingMode.NATIVE] reports the last reason a request gave, because a request refused for
+     * want of a surface is still worth explaining even when the surface was never described.
+     */
     private fun reasonFor(mode: ProcessingMode): ProcessingReason? = when (mode) {
-        ProcessingMode.NATIVE, ProcessingMode.PROCESSING_ACTIVE -> null
+        ProcessingMode.PROCESSING_ACTIVE -> null
+
+        ProcessingMode.NATIVE -> lastReason
 
         ProcessingMode.PROCESSING_UNAVAILABLE -> ProcessingReason.NO_SURFACE
 

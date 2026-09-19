@@ -160,10 +160,27 @@ class ProcessingCoordinatorTest {
 
         assertTrue("there is nothing to attach to, so nothing was asked", controller.requests.isEmpty())
         val diagnostics = coordinator.diagnostics.value
-        assertEquals(ProcessingMode.PROCESSING_UNAVAILABLE, diagnostics.mode)
-        assertEquals(ProcessingReason.NO_SURFACE, diagnostics.reason)
+        assertEquals(
+            "never told there is a surface, so the report is still the default one",
+            ProcessingMode.NATIVE,
+            diagnostics.mode,
+        )
         assertEquals(false, diagnostics.lastAttachmentSucceeded)
         assertEquals(1, diagnostics.requestCount)
+    }
+
+    @Test
+    fun `a disable request is still sent when there is no surface`() = runTest {
+        // Leaving the native path must not depend on a view existing. A disable that was refused for
+        // want of a surface would be a hole in the fallback at exactly the moment it matters.
+        val controller = FakeController(ProcessingResult.Detached)
+        val coordinator = ProcessingCoordinator().apply { bindController(controller) }
+
+        coordinator.request(ProcessingRequest.DISABLE)
+
+        assertEquals(listOf(ProcessingRequest.DISABLE), controller.requests)
+        assertEquals(ProcessingMode.NATIVE, coordinator.diagnostics.value.mode)
+        assertFalse(coordinator.diagnostics.value.effectAttached)
     }
 
     @Test

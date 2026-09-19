@@ -190,13 +190,16 @@ class ProcessingSessionContractTest {
     }
 
     @Test
-    fun `every answer survives the trip out and back`() {
+    fun `every answer a player can produce survives the trip out and back`() {
+        // Only outcomes the player's own handler can return. `UNREACHABLE` is not one of them: it
+        // describes a request that never arrived, so it is decided on the client and never travels —
+        // and if it were sent, a refusal and an unreachable answer would be the same bits, which is
+        // exactly the confusion the separate outcomes exist to prevent.
         val answers = listOf(
             ProcessingResult(ProcessingOutcome.ATTACHED),
             ProcessingResult.Detached,
             ProcessingResult.refused(ProcessingReason.EFFECTS_MODULE_ABSENT),
             ProcessingResult.refused(ProcessingReason.NO_STAGE_IMPLEMENTED),
-            ProcessingResult.unreachable(ProcessingReason.COMMAND_UNAVAILABLE),
         )
 
         answers.forEach { answer ->
@@ -208,5 +211,23 @@ class ProcessingSessionContractTest {
             )
             assertEquals(answer, decoded)
         }
+    }
+
+    @Test
+    fun `an attached answer and a detached one are told apart by the outcome, not the code`() {
+        // Both are successes, so the outcome name is the only thing that distinguishes them. If the
+        // codec ever dropped it, an attachment would read as a detachment.
+        val attached = ProcessingSessionContract.encode(ProcessingResult(ProcessingOutcome.ATTACHED))
+        val detached = ProcessingSessionContract.encode(ProcessingResult.Detached)
+
+        assertEquals(attached.resultCode, detached.resultCode)
+        assertEquals(
+            ProcessingResult(ProcessingOutcome.ATTACHED),
+            ProcessingSessionContract.decode(attached.resultCode, ProcessingOutcome.ATTACHED.name, null),
+        )
+        assertEquals(
+            ProcessingResult.Detached,
+            ProcessingSessionContract.decode(detached.resultCode, ProcessingOutcome.DETACHED.name, null),
+        )
     }
 }

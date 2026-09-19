@@ -913,7 +913,9 @@ private fun RenderingSection(
     modifier: Modifier = Modifier,
 ) {
     val spacing = MotionFlowTheme.spacing
-    val note = processingNote(processing)
+    // A note explains why the path is unavailable, inactive or failed. "native" claims nothing, so it
+    // gets no note: the mode and its reason are paired, not stored, and this mirrors that pairing.
+    val note = if (processing.mode == ProcessingMode.NATIVE) null else processingNote(processing)
 
     Column(
         modifier = modifier
@@ -979,9 +981,9 @@ private fun processingValue(processing: ProcessingDiagnostics): String = stringR
 /**
  * The reason, when there is one to read.
  *
- * "unavailable" or "inactive" alone would leave a reader guessing at which of several causes applies,
- * and "failed" would be bare. Every reason the coordinator can produce is answerable, and the reasons
- * that need no explanation — an attached stage, and the state before anything is known — have none.
+ * A note appears for a refused request and for an unavailable path, and never for the default state:
+ * "native" means nothing has been reported, and explaining a state the report does not claim would be
+ * saying more than was established. Every reason the coordinator can pair with a mode is answerable.
  */
 @Composable
 private fun processingNote(processing: ProcessingDiagnostics): String? = when (processing.reason) {
