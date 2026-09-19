@@ -1,7 +1,9 @@
 package com.motionflow.player.core.media.session
 
 import android.os.Bundle
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import com.motionflow.player.core.media.processing.ProcessingOutcome
 import com.motionflow.player.core.media.processing.ProcessingReason
@@ -65,12 +67,33 @@ object ProcessingSessionContract {
     }
 
     /** Puts [result] on the wire. */
+    // SessionError is Media3's "unstable" surface: its codes are supported, the class is not frozen.
+    // The annotation is written fully qualified because Kotlin also has a `kotlin.OptIn`.
+    @androidx.annotation.OptIn(UnstableApi::class)
     fun encode(result: ProcessingResult): SessionResult {
         val extras = Bundle()
         extras.putString(KEY_OUTCOME, result.outcome.name)
         result.reason?.let { extras.putString(KEY_REASON, it.name) }
-        return SessionResult(resultCodeFor(result.outcome), extras)
+        return when (result.outcome) {
+            ProcessingOutcome.ATTACHED, ProcessingOutcome.DETACHED ->
+                SessionResult(SessionResult.RESULT_SUCCESS, extras)
+
+            ProcessingOutcome.REFUSED, ProcessingOutcome.UNREACHABLE ->
+                SessionResult(SessionError.ERROR_NOT_SUPPORTED, extras)
+        }
     }
+
+    /**
+     * The bare refusal for a request this contract does not define.
+     *
+     * Spelled through `SessionError.ERROR_NOT_SUPPORTED` rather than through its alias
+     * `SessionResult.RESULT_ERROR_NOT_SUPPORTED`, which is the same code: the `SessionResult`
+     * constructor's `@IntDef` lists the `SessionError` names, so the alias is rejected as an argument.
+     * No extras travel with it, because an unknown action has no outcome to report; a client reads it
+     * as a refusal of the request it sent.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    fun unsupportedResult(): SessionResult = SessionResult(SessionError.ERROR_NOT_SUPPORTED)
 
     /**
      * Reads an answer.
@@ -96,17 +119,8 @@ object ProcessingSessionContract {
             else -> ProcessingResult.unreachable(ProcessingReason.TRANSPORT_FAILED)
         }
 
-    private fun resultCodeFor(outcome: ProcessingOutcome): Int = when (outcome) {
-        ProcessingOutcome.ATTACHED, ProcessingOutcome.DETACHED -> SessionResult.RESULT_SUCCESS
-        ProcessingOutcome.REFUSED -> SessionResult.RESULT_ERROR_NOT_SUPPORTED
-        // A client-side outcome: nothing on the player side produces it, and if one ever did it would
-        // mean the same thing the player means by a refusal — nothing is attached.
-        ProcessingOutcome.UNREACHABLE -> SessionResult.RESULT_ERROR_NOT_SUPPORTED
-    }
-
     /**
      * Resolves an outcome name, or `null` when the name is absent or not one this build knows.
-     *
      * Compared by name rather than looked up with `valueOf`, so a name from a future build is refused
      * instead of throwing.
      */

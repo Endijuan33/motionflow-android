@@ -87,9 +87,7 @@ class ProcessingSessionCallback(
         args: Bundle,
     ): ListenableFuture<SessionResult> {
         val request = ProcessingSessionContract.requestFor(customCommand)
-            ?: return Futures.immediateFuture(
-                SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED),
-            )
+            ?: return Futures.immediateFuture(ProcessingSessionContract.unsupportedResult())
 
         val player = engine()
         if (player == null) {

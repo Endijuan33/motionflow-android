@@ -85,6 +85,23 @@ class ProcessingSessionContractTest {
     }
 
     @Test
+    fun `an action this contract does not define is refused in the same code as a refusal`() {
+        // The zero-argument form the callback answers an unknown action with. It has to be the same
+        // result code as a refusal, or a client would read a malformed request as a transport failure.
+        val unsupported = ProcessingSessionContract.unsupportedResult()
+
+        assertEquals(SessionResult.RESULT_ERROR_NOT_SUPPORTED, unsupported.resultCode)
+        assertEquals(
+            ProcessingResult.refused(ProcessingReason.REQUEST_REFUSED),
+            ProcessingSessionContract.decode(
+                resultCode = unsupported.resultCode,
+                outcome = null,
+                reason = null,
+            ),
+        )
+    }
+
+    @Test
     fun `a success decodes to the outcome it names`() {
         assertEquals(
             ProcessingResult(ProcessingOutcome.ATTACHED),
