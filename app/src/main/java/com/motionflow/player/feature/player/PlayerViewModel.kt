@@ -26,6 +26,10 @@ import com.motionflow.player.core.media.pacing.FramePacingState
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import com.motionflow.player.core.media.processing.ProcessingCoordinator
+import com.motionflow.player.core.media.processing.ProcessingDiagnostics
+import com.motionflow.player.core.media.processing.ProcessingRequest
+import com.motionflow.player.core.media.processing.android.MediaSessionProcessingController
 import com.motionflow.player.core.media.refresh.DisplayCapabilityProvider
 import com.motionflow.player.core.media.refresh.RefreshRateController
 import com.motionflow.player.core.media.refresh.RefreshRateCoordinator
@@ -33,7 +37,6 @@ import com.motionflow.player.core.media.refresh.RefreshRateState
 import com.motionflow.player.core.media.rendering.RenderingCoordinator
 import com.motionflow.player.core.media.rendering.RenderingDiagnostics
 import com.motionflow.player.core.media.rendering.SurfaceType
-import com.motionflow.player.core.media.rendering.android.AndroidRenderingCapabilityProvider
 import com.motionflow.player.core.media.session.MotionFlowMediaSessionService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -96,9 +99,21 @@ class PlayerViewModel(
      * and if this coordinator were removed, playback would be indistinguishable — which is the
      * property the tests check.
      */
-    private val renderingCoordinator = RenderingCoordinator(AndroidRenderingCapabilityProvider())
+    private val renderingCoordinator = RenderingCoordinator()
 
     val renderingDiagnostics: StateFlow<RenderingDiagnostics> = renderingCoordinator.diagnostics
+
+    /**
+     * Whether a processing stage is in the video path, and why not when it is not.
+     *
+     * A separate question from rendering, with a separate owner: the rendering foundation describes
+     * frames arriving at a surface, while this reports attachment — and attachment can only change at
+     * the process-owned player, through the session command the screen and the session service share.
+     * Nothing here holds an `ExoPlayer`, and nothing here can make one.
+     */
+    private val processingCoordinator = ProcessingCoordinator()
+
+    val processingDiagnostics: StateFlow<ProcessingDiagnostics> = processingCoordinator.diagnostics
 
     /** When the current item was asked to prepare, so first-frame latency can be measured. */
     private var prepareRequestedAtNanos: Long? = null
@@ -180,7 +195,16 @@ class PlayerViewModel(
         // The refresh engine owns the display decision; the pacing engine analyses what that left
         // behind, including the case where the platform would not move the display.
         viewModelScope.launch {
-            refreshRateCoordinator.state.collect { framePacingCoordinator.onRefreshRateState(it) }
+            refreshRateCoordinator.state.collect { state ->
+                framePacingCoordinator.onRefreshRateState(state)
+                // And the processing report carries both rates, so a reader does not have to join
+                // three sources to answer one question. They are copies; processing derives nothing
+                // from them and cannot change them.
+                processingCoordinator.onCadence(
+                    videoFps = state.frameRate.fps,
+                    displayRefreshRateHz = state.displayRefreshRateHz,
+                )
+            }
         }
     }
 
@@ -260,14 +284,35 @@ class PlayerViewModel(
      *
      * The screen owns the view, so it is the only thing that can observe this. Only values cross the
      * boundary — never the view or its surface.
+     *
+     * Both coordinators are told, because they answer different questions: the rendering foundation
+     * describes the surface, and the processing report needs to know whether there is anything for a
+     * stage to render through. Neither of them is a second source of truth, and neither may hold the
+     * surface.
      */
     fun onRenderingSurfaceCreated(surfaceType: SurfaceType) {
         renderingCoordinator.onSurfaceCreated(surfaceType)
+        processingCoordinator.onSurfaceChanged(bound = true)
     }
 
     /** Reports that the player screen's surface has gone, so no binding outlives it. */
     fun onRenderingSurfaceReleased() {
         renderingCoordinator.onSurfaceReleased()
+        processingCoordinator.onSurfaceChanged(bound = false)
+    }
+
+    /**
+     * Asks for a processing stage to be put into the video path, or taken out of it.
+     *
+     * The answer is reported through [processingDiagnostics] rather than returned, so a caller cannot
+     * mistake a refusal for a failure of playback. Nothing is exposed in the interface yet that calls
+     * this: a control that could never succeed would be a lie, and no stage exists to attach. The path
+     * is live and covered by tests, and it is what a later phase drives.
+     */
+    fun requestProcessing(request: ProcessingRequest) {
+        viewModelScope.launch {
+            processingCoordinator.request(request)
+        }
     }
 
     override fun onCleared() {
@@ -275,6 +320,10 @@ class PlayerViewModel(
         refreshRateCoordinator.detach()
         // And let go of the surface, so a processing stage could never outlive the view.
         renderingCoordinator.onSurfaceReleased()
+        processingCoordinator.onSurfaceChanged(bound = false)
+        // The session goes on serving other screens; this view model just stops being able to ask it
+        // for anything, so a request in flight cannot publish into a destroyed screen.
+        processingCoordinator.unbindController()
 
         val controller = controller
         if (controller != null) {
@@ -329,6 +378,10 @@ class PlayerViewModel(
         this.controller = controller
         controller.addListener(playerListener)
         _player.value = controller
+        // The connection is the only route to the process-owned player, so it is also what makes the
+        // processing command reachable — or not, if the session does not offer it, which the
+        // controller discovers per request rather than assuming here.
+        processingCoordinator.bindController(MediaSessionProcessingController(controller))
         loadSource(controller)
         syncState()
     }

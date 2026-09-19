@@ -95,17 +95,18 @@ import com.motionflow.player.core.media.pacing.VideoCadence
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import com.motionflow.player.core.media.processing.ProcessingCapabilities
+import com.motionflow.player.core.media.processing.ProcessingDiagnostics
+import com.motionflow.player.core.media.processing.ProcessingMode
+import com.motionflow.player.core.media.processing.ProcessingReason
 import com.motionflow.player.core.media.refresh.RefreshRateReason
 import com.motionflow.player.core.media.refresh.RefreshRateState
 import com.motionflow.player.core.media.refresh.RefreshRateStatus
 import com.motionflow.player.core.media.refresh.android.AndroidDisplayCapabilityProvider
 import com.motionflow.player.core.media.refresh.android.AndroidRefreshRateController
-import com.motionflow.player.core.media.rendering.ProcessingUnavailableReason
-import com.motionflow.player.core.media.rendering.RenderingCapabilities
 import com.motionflow.player.core.media.rendering.RenderingDiagnostics
 import com.motionflow.player.core.media.rendering.RenderingMetrics
-import com.motionflow.player.core.media.rendering.RenderingMode
-import com.motionflow.player.core.media.rendering.RenderingPipeline
+import com.motionflow.player.core.media.rendering.RenderingSurface
 import com.motionflow.player.core.media.rendering.SurfaceType
 
 /**
@@ -127,6 +128,7 @@ fun PlayerScreen(
     val refreshRate by viewModel.refreshRateState.collectAsStateWithLifecycle()
     val framePacing by viewModel.framePacingState.collectAsStateWithLifecycle()
     val rendering by viewModel.renderingDiagnostics.collectAsStateWithLifecycle()
+    val processing by viewModel.processingDiagnostics.collectAsStateWithLifecycle()
 
     RequestMediaNotificationPermission()
     AttachRefreshRateEnvironment(viewModel)
@@ -137,6 +139,7 @@ fun PlayerScreen(
         refreshRate = refreshRate.toDiagnosticsModel(),
         framePacing = framePacing,
         rendering = rendering,
+        processing = processing,
         onSurfaceChange = { surfaceType ->
             if (surfaceType == null) {
                 viewModel.onRenderingSurfaceReleased()
@@ -209,6 +212,7 @@ private fun PlayerContent(
     refreshRate: RefreshRateDiagnosticsModel,
     framePacing: FramePacingState,
     rendering: RenderingDiagnostics,
+    processing: ProcessingDiagnostics,
     onSurfaceChange: (SurfaceType?) -> Unit,
     onNavigateBack: () -> Unit,
     onPlayPause: () -> Unit,
@@ -285,7 +289,7 @@ private fun PlayerContent(
 
         FramePacingDiagnostics(state = framePacing)
 
-        RenderingSection(diagnostics = rendering)
+        RenderingSection(diagnostics = rendering, processing = processing)
     }
 }
 
@@ -895,16 +899,21 @@ private fun refreshRateReason(model: RefreshRateDiagnosticsModel): String? = whe
 }
 
 /**
- * What is rendering the video, and what could render it.
+ * What is rendering the video, and whether a processing stage is attached.
  *
- * "Rendering" is the path frames take today — Media3's own renderer — and "processing" is a stage
- * that would sit in front of the display, which nothing in this application attaches. The two are
- * kept apart on purpose: no state here means frames are being generated or copied.
+ * "Rendering" is the path frames take — Media3's own renderer, the only one this application has ever
+ * built — and "processing" is a stage that would sit in front of the display. The two are kept apart
+ * on purpose, and the processing half says only whether something is attached: no state here means
+ * frames are being generated, copied more cheaply, or produced at a different rate.
  */
 @Composable
-private fun RenderingSection(diagnostics: RenderingDiagnostics, modifier: Modifier = Modifier) {
+private fun RenderingSection(
+    diagnostics: RenderingDiagnostics,
+    processing: ProcessingDiagnostics,
+    modifier: Modifier = Modifier,
+) {
     val spacing = MotionFlowTheme.spacing
-    val note = renderingNote(diagnostics)
+    val note = processingNote(processing)
 
     Column(
         modifier = modifier
@@ -913,7 +922,7 @@ private fun RenderingSection(diagnostics: RenderingDiagnostics, modifier: Modifi
         verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
     ) {
         Text(
-            text = renderingSummary(diagnostics),
+            text = renderingSummary(diagnostics, processing),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -931,7 +940,10 @@ private fun RenderingSection(diagnostics: RenderingDiagnostics, modifier: Modifi
 }
 
 @Composable
-private fun renderingSummary(diagnostics: RenderingDiagnostics): String {
+private fun renderingSummary(
+    diagnostics: RenderingDiagnostics,
+    processing: ProcessingDiagnostics,
+): String {
     val firstFrame = diagnostics.metrics.firstFrameLatencyMs?.let { latency ->
         stringResource(R.string.rendering_first_frame, latency.toString())
     }
@@ -940,37 +952,55 @@ private fun renderingSummary(diagnostics: RenderingDiagnostics): String {
             R.string.rendering_label,
             stringResource(R.string.rendering_mode_native_media3),
         ),
-        stringResource(R.string.rendering_processing_label, processingValue(diagnostics)),
+        stringResource(R.string.processing_label, processingValue(processing)),
         firstFrame,
     )
     return parts.joinToString(SUMMARY_SEPARATOR)
 }
 
+/**
+ * The processing state, and nothing more.
+ *
+ * "active" is reachable only when a player has reported that a stage attached, so no amount of asking
+ * can produce the label. Nothing names an effect, an acceleration or an output frame rate: this
+ * version attaches nothing, and a label for it would describe something that does not exist.
+ */
 @Composable
-private fun processingValue(diagnostics: RenderingDiagnostics): String = when {
-    // Unreachable while no stage is implemented, and kept so that a stage which does attach could
-    // never be displayed as inactive.
-    diagnostics.pipeline.processingActive -> stringResource(R.string.rendering_processing_active)
+private fun processingValue(processing: ProcessingDiagnostics): String = stringResource(
+    when (processing.mode) {
+        ProcessingMode.NATIVE -> R.string.processing_value_native
+        ProcessingMode.PROCESSING_INACTIVE -> R.string.processing_value_inactive
+        ProcessingMode.PROCESSING_UNAVAILABLE -> R.string.processing_value_unavailable
+        ProcessingMode.PROCESSING_ACTIVE -> R.string.processing_value_active
+        ProcessingMode.PROCESSING_FAILED -> R.string.processing_value_failed
+    },
+)
 
-    diagnostics.pipeline.mode == RenderingMode.PROCESSING_NOT_ACTIVE ->
-        stringResource(R.string.rendering_processing_inactive)
+/**
+ * The reason, when there is one to read.
+ *
+ * "unavailable" or "inactive" alone would leave a reader guessing at which of several causes applies,
+ * and "failed" would be bare. Every reason the coordinator can produce is answerable, and the reasons
+ * that need no explanation — an attached stage, and the state before anything is known — have none.
+ */
+@Composable
+private fun processingNote(processing: ProcessingDiagnostics): String? = when (processing.reason) {
+    ProcessingReason.NO_SURFACE -> stringResource(R.string.processing_note_no_surface)
 
-    else -> stringResource(R.string.rendering_processing_unavailable)
+    ProcessingReason.NO_STAGE_IMPLEMENTED -> stringResource(R.string.processing_note_no_stage)
+
+    ProcessingReason.EFFECTS_MODULE_ABSENT ->
+        stringResource(R.string.processing_note_effects_module_absent)
+
+    ProcessingReason.REQUEST_REFUSED -> stringResource(R.string.processing_note_refused)
+
+    ProcessingReason.COMMAND_UNAVAILABLE ->
+        stringResource(R.string.processing_note_command_unavailable)
+
+    ProcessingReason.TRANSPORT_FAILED -> stringResource(R.string.processing_note_transport_failed)
+
+    null -> null
 }
-
-/** A note only appears when the reason needs explaining; "unavailable" speaks for itself. */
-@Composable
-private fun renderingNote(diagnostics: RenderingDiagnostics): String? =
-    when (diagnostics.unavailableReason) {
-        ProcessingUnavailableReason.NO_SURFACE -> stringResource(R.string.rendering_note_no_surface)
-
-        ProcessingUnavailableReason.STAGE_UNAVAILABLE ->
-            stringResource(R.string.rendering_note_stage_unavailable)
-
-        ProcessingUnavailableReason.NO_STAGE_IMPLEMENTED -> null
-
-        null -> null
-    }
 
 /**
  * How the display's cadence relates to the video's, and what was done about it.
@@ -1114,21 +1144,34 @@ private const val VALUE_WEIGHT = 0.58f
  */
 private fun renderingPreview(firstFrameLatencyMs: Long? = null): RenderingDiagnostics =
     RenderingDiagnostics(
-        pipeline = RenderingPipeline(
-            mode = RenderingMode.PROCESSING_NOT_ACTIVE,
-            capabilities = RenderingCapabilities(
-                apiLevel = 36,
-                surfaceType = SurfaceType.SURFACE_VIEW,
-                processingAttachable = true,
-            ),
-            surfaceBound = true,
-        ),
+        surface = RenderingSurface(type = SurfaceType.SURFACE_VIEW, bound = true),
         metrics = RenderingMetrics(
             firstFrameLatencyMs = firstFrameLatencyMs,
             surfaceAttachCount = 1,
         ),
-        unavailableReason = ProcessingUnavailableReason.NO_STAGE_IMPLEMENTED,
     )
+
+/**
+ * Builds a processing state for previews: a surface is bound, a stage could be attached, and none is
+ * — the steady state of the application. The active state is never previewed, because nothing in this
+ * version can reach it.
+ */
+private fun processingPreview(
+    mode: ProcessingMode = ProcessingMode.PROCESSING_INACTIVE,
+    reason: ProcessingReason? = ProcessingReason.NO_STAGE_IMPLEMENTED,
+    requestCount: Int = 0,
+): ProcessingDiagnostics = ProcessingDiagnostics(
+    mode = mode,
+    reason = reason,
+    capabilities = ProcessingCapabilities(surfaceBound = true, canHostEffect = true),
+    effectAttached = false,
+    lastAttachmentSucceeded = null,
+    attachCount = 0,
+    detachCount = 0,
+    requestCount = requestCount,
+    videoFps = 23.976f,
+    displayRefreshRateHz = 24f,
+)
 
 /**
  * Builds a pacing state for previews by running the real analysis, so a preview cannot show a
@@ -1189,6 +1232,7 @@ private fun PlayerContentPreview() {
             ),
             framePacing = pacingPreview(videoFps = 23.976f, displayHz = 24f),
             rendering = renderingPreview(firstFrameLatencyMs = 412L),
+            processing = processingPreview(),
             onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
@@ -1222,6 +1266,10 @@ private fun PlayerErrorPreview() {
             ),
             framePacing = pacingPreview(videoFps = 24f, displayHz = 60f),
             rendering = renderingPreview(),
+            processing = processingPreview(
+                mode = ProcessingMode.PROCESSING_UNAVAILABLE,
+                reason = ProcessingReason.NO_SURFACE,
+            ),
             onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},

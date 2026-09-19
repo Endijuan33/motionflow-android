@@ -19,6 +19,10 @@ import com.motionflow.player.core.media.player.MotionFlowPlayer
  *
  * The service creates the engine in [onCreate] and releases it in [onDestroy]; no other component
  * creates a player.
+ *
+ * It also hosts [ProcessingSessionCallback], which is where a request to change the rendering path is
+ * answered. That request must be handled here and not in a screen, because `ExoPlayer.setVideoEffects`
+ * belongs to `ExoPlayer` — a screen holds only a `MediaController`, which cannot reach it.
  */
 class MotionFlowMediaSessionService : MediaSessionService() {
 
@@ -32,6 +36,7 @@ class MotionFlowMediaSessionService : MediaSessionService() {
         val player = MotionFlowPlayer(this)
         engine = player
         mediaSession = MediaSession.Builder(this, player.player)
+            .setCallback(ProcessingSessionCallback(engine = { engine }))
             .setSessionActivity(openAppIntent())
             .build()
     }

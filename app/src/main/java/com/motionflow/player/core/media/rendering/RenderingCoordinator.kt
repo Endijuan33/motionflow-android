@@ -5,15 +5,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Describes and reports on the rendering path, without joining it.
+ * Describes the rendering path, without joining it.
  *
  * Android-free, and deliberately without a coroutine scope: every input is an event that arrives
  * rarely, so a description is published synchronously from the event that caused it. There is no
  * timer, no polling and no per-frame work, and nothing here can delay a frame.
  *
- * The foundation never renders anything. It knows which surface Media3 is drawing on, whether a
- * processing stage could sit in front of it, and the handful of baseline numbers that can be taken
- * without touching frame data. If it were removed, playback would be identical.
+ * The foundation never renders anything and never attaches anything. It knows which surface Media3 is
+ * drawing on and the handful of baseline numbers that can be taken without touching frame data. If it
+ * were removed, playback would be identical.
  *
  * ## What it is told, and by whom
  *
@@ -21,27 +21,20 @@ import kotlinx.coroutines.flow.asStateFlow
  * | --- | --- | --- |
  * | Surface created/released, and its type | The player screen, which composes the view | The view is the screen's, so the screen is what can observe it |
  * | First frame rendered, video size | The player, through its listener | Media3 knows when it has presented a frame |
- * | API level | [capabilityProvider] | A platform fact, read once |
  *
- * [controller] is `null` in the application: no processing stage exists to bind. See
- * [RenderingController] for why, and what a later phase would have to add.
+ * Whether a processing stage is attached is *not* decided here: that question belongs to
+ * `core/media/processing`, which asks the player directly. Describing a path and changing it are
+ * different jobs, and keeping them in one class is how a foundation starts to touch frames.
  */
-class RenderingCoordinator(
-    private val capabilityProvider: RenderingCapabilityProvider,
-    private val controller: RenderingController? = null,
-) {
+class RenderingCoordinator {
 
     private val _diagnostics = MutableStateFlow(RenderingDiagnostics.NativeDefault)
     val diagnostics: StateFlow<RenderingDiagnostics> = _diagnostics.asStateFlow()
-
-    private var apiLevel: Int? = null
-    private var apiLevelResolved = false
 
     private var surfaceBound = false
     private var surfaceType = SurfaceType.UNKNOWN
     private var attachCount = 0
     private var detachCount = 0
-    private var attachment: RenderingAttachment? = null
 
     private var metrics = RenderingMetrics.Empty
 
@@ -57,7 +50,6 @@ class RenderingCoordinator(
         surfaceBound = true
         attachCount++
         this.surfaceType = surfaceType
-        attachment = bindProcessingStage(surfaceType)
         publish()
     }
 
@@ -73,8 +65,6 @@ class RenderingCoordinator(
 
         surfaceBound = false
         detachCount++
-        runCatching { controller?.onSurfaceLost() }
-        attachment = null
         publish()
     }
 
@@ -90,72 +80,17 @@ class RenderingCoordinator(
         publish()
     }
 
-    private fun bindProcessingStage(surfaceType: SurfaceType): RenderingAttachment? {
-        val stage = controller ?: return null
-        val environment = RenderingEnvironment(
-            apiLevel = resolveApiLevel() ?: return null,
-            surfaceType = surfaceType,
-        )
-        return runCatching { stage.onSurfaceAvailable(environment) }.getOrElse {
-            // A stage that cannot bind is a stage that is not there. Playback is unaffected either
-            // way, which is the whole point of the seam.
-            RenderingAttachment(attached = false, reason = ProcessingUnavailableReason.STAGE_UNAVAILABLE)
-        }
-    }
-
-    private fun resolveApiLevel(): Int? {
-        if (!apiLevelResolved) {
-            apiLevelResolved = true
-            apiLevel = runCatching { capabilityProvider.environment().apiLevel }.getOrNull()
-        }
-        return apiLevel
-    }
-
     private fun publish() {
-        val attached = attachment?.attached == true
-        val attachable = processingAttachable()
-        val capabilities = RenderingCapabilities(
-            apiLevel = resolveApiLevel(),
-            surfaceType = if (surfaceBound) surfaceType else SurfaceType.UNKNOWN,
-            processingAttachable = attachable,
-        )
-
         _diagnostics.value = RenderingDiagnostics(
-            pipeline = RenderingPipeline(
-                mode = modeFor(attachable),
-                capabilities = capabilities,
-                surfaceBound = surfaceBound,
-                processingAttached = attached,
+            surface = RenderingSurface(
+                // A surface that has gone is not a surface of any kind, whatever kind it was.
+                type = if (surfaceBound) surfaceType else SurfaceType.UNKNOWN,
+                bound = surfaceBound,
             ),
             metrics = metrics.copy(
                 surfaceAttachCount = attachCount,
                 surfaceDetachCount = detachCount,
             ),
-            unavailableReason = unavailableReason(),
         )
-    }
-
-    /**
-     * Whether a processing stage could sit in front of the current surface.
-     *
-     * True once a surface is bound, because Media3's renderer can host one — that is a property of the
-     * renderer, not of this application. A stage bound here that reports it cannot attach makes it
-     * false, so the answer always reflects the most specific thing known.
-     */
-    private fun processingAttachable(): Boolean = when {
-        !surfaceBound -> false
-        attachment?.attached == true -> true
-        attachment?.reason == ProcessingUnavailableReason.STAGE_UNAVAILABLE -> false
-        else -> true
-    }
-
-    private fun modeFor(attachable: Boolean): RenderingMode =
-        if (attachable) RenderingMode.PROCESSING_NOT_ACTIVE else RenderingMode.PROCESSING_UNAVAILABLE
-
-    private fun unavailableReason(): ProcessingUnavailableReason? = when {
-        !surfaceBound -> ProcessingUnavailableReason.NO_SURFACE
-        attachment?.attached == true -> null
-        attachment?.reason != null -> attachment?.reason
-        else -> ProcessingUnavailableReason.NO_STAGE_IMPLEMENTED
     }
 }
