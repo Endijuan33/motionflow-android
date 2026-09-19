@@ -49,7 +49,7 @@ class ProcessingSessionContractTest {
 
     @Test
     fun `a command that is not a processing request is not one`() {
-        val other = SessionCommand("com.motionflow.player.OTHER", Bundle.EMPTY)
+        val other = SessionCommand("com.motionflow.player.OTHER", Bundle())
 
         assertNull(ProcessingSessionContract.requestFor(other))
     }

@@ -33,6 +33,7 @@ class ProcessingCoordinator {
 
     private var controller: ProcessingController? = null
 
+    private var surfaceReported = false
     private var surfaceBound = false
     private var attached = false
     private var lastAttachmentSucceeded: Boolean? = null
@@ -63,12 +64,16 @@ class ProcessingCoordinator {
     /**
      * Records that the player screen has, or no longer has, a video surface.
      *
-     * A repeated report of the same state is ignored: a surface that is already bound has not been
-     * bound again, and a stale release must not clear a record of what happened while it was bound.
+     * A repeated report of the same state is ignored *once one has been made*: a surface that is
+     * already bound has not been bound again, and a stale release must not clear a record of what
+     * happened while it was bound. The first report is never mistaken for a repeat, though — being
+     * told there is no surface is different from not having been told anything, and the two read
+     * differently in the report.
      */
     fun onSurfaceChanged(bound: Boolean) {
-        if (bound == surfaceBound) return
+        if (surfaceReported && bound == surfaceBound) return
 
+        surfaceReported = true
         surfaceBound = bound
         if (!bound && attached) {
             // The renderer cannot keep a stage that has nothing to render through.
@@ -187,6 +192,8 @@ class ProcessingCoordinator {
     }
 
     private fun modeFor(): ProcessingMode = when {
+        // Nothing has been reported yet, so there is nothing to describe but Media3's own path.
+        !surfaceReported -> ProcessingMode.NATIVE
         !surfaceBound -> ProcessingMode.PROCESSING_UNAVAILABLE
         attached -> ProcessingMode.PROCESSING_ACTIVE
         lastRequestFailed == true -> ProcessingMode.PROCESSING_FAILED

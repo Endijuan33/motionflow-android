@@ -50,10 +50,14 @@ object ProcessingSessionContract {
     /**
      * The commands a session must declare for a controller to be allowed to send them.
      *
-     * Extras are empty: the action *is* the request, so there is nothing to carry.
+     * Extras are empty: the action *is* the request, so there is nothing to carry. Built as
+     * `Bundle()` rather than `Bundle.EMPTY` because these are properties, so they are constructed when
+     * this object is first touched — and a framework constant is `null` off-device, where the stub
+     * `android.jar` has no static initialisers. A null there fails class initialisation, which surfaces
+     * as every test in the file erroring out for a reason that has nothing to do with the code.
      */
-    val enableCommand = SessionCommand(ACTION_ENABLE, Bundle.EMPTY)
-    val disableCommand = SessionCommand(ACTION_DISABLE, Bundle.EMPTY)
+    val enableCommand = SessionCommand(ACTION_ENABLE, Bundle())
+    val disableCommand = SessionCommand(ACTION_DISABLE, Bundle())
 
     /** The command that carries [request]. */
     fun commandFor(request: ProcessingRequest): SessionCommand =

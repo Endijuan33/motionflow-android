@@ -48,6 +48,20 @@ class ProcessingCoordinatorTest {
     }
 
     @Test
+    fun `being told there is no surface is not the same as not being told anything`() {
+        val silent = ProcessingCoordinator().diagnostics.value
+        val told = ProcessingCoordinator()
+            .apply { onSurfaceChanged(bound = false) }
+            .diagnostics
+            .value
+
+        assertEquals("nothing has been reported yet", ProcessingMode.NATIVE, silent.mode)
+        assertNull("and nothing is explained, because nothing was established", silent.reason)
+        assertEquals("a surface reported absent", ProcessingMode.PROCESSING_UNAVAILABLE, told.mode)
+        assertEquals(ProcessingReason.NO_SURFACE, told.reason)
+    }
+
+    @Test
     fun `with a surface and no stage processing is inactive, not failed`() {
         val diagnostics = boundCoordinator().diagnostics.value
 

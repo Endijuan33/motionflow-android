@@ -52,7 +52,7 @@ class MediaSessionProcessingController(
 
         // Sending is synchronous and may fail on the spot; awaiting is not, and its cancellation is
         // the caller's business rather than a transport failure, so the two are kept apart.
-        val pending = runCatching { controller.sendCustomCommand(command, Bundle.EMPTY) }
+        val pending = runCatching { controller.sendCustomCommand(command, Bundle()) }
             .getOrElse { return ProcessingResult.unreachable(ProcessingReason.TRANSPORT_FAILED) }
 
         val answer = await(pending)
