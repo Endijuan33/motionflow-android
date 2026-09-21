@@ -26,6 +26,12 @@ import com.motionflow.player.core.media.pacing.FramePacingState
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import com.motionflow.player.core.media.performance.PerformanceCommandResult
+import com.motionflow.player.core.media.performance.PerformanceComparison
+import com.motionflow.player.core.media.performance.PerformanceDiagnostics
+import com.motionflow.player.core.media.performance.PerformanceSessionLength
+import com.motionflow.player.core.media.performance.PerformanceSessionRequest
+import com.motionflow.player.core.media.performance.android.MediaSessionPerformanceController
 import com.motionflow.player.core.media.processing.ProcessingCoordinator
 import com.motionflow.player.core.media.processing.ProcessingDiagnostics
 import com.motionflow.player.core.media.processing.ProcessingRequest
@@ -41,8 +47,11 @@ import com.motionflow.player.core.media.session.MotionFlowMediaSessionService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -68,6 +77,14 @@ class PlayerViewModel(
 ) : AndroidViewModel(application) {
 
     private val metadataRepository = (application as MotionFlowApplication).metadataRepository
+
+    /**
+     * The measurements taken so far, held by the application.
+     *
+     * Reading it here rather than owning it: a comparison needs both pipelines, and switching pipeline
+     * restarts the service — so the history has to outlive every screen and every service.
+     */
+    private val performanceHistoryStore = (application as MotionFlowApplication).performanceHistoryStore
 
     private val refreshRateCoordinator = RefreshRateCoordinator(viewModelScope)
 
@@ -114,6 +131,38 @@ class PlayerViewModel(
     private val processingCoordinator = ProcessingCoordinator()
 
     val processingDiagnostics: StateFlow<ProcessingDiagnostics> = processingCoordinator.diagnostics
+
+    /**
+     * The measurement picture, as the session last reported it — with the refusal, if there was one.
+     *
+     * The numbers are the service's: it owns the recorder, because Media3's counters belong to the
+     * engine it owns. This state is a mirror updated from command answers, so nothing here can disagree
+     * with what was actually measured — and the answer travels with its refusal, because "the player
+     * declined" and "nobody was asked" are different findings.
+     */
+    private val _performanceReport = MutableStateFlow(PerformanceCommandResult())
+
+    val performanceReport: StateFlow<PerformanceCommandResult> = _performanceReport.asStateFlow()
+
+    /**
+     * The two baselines side by side, from the application's history.
+     *
+     * Application-scoped because a comparison spans two runs under two pipelines, and changing the
+     * pipeline restarts the service that produced the first measurement.
+     */
+    val performanceComparison: StateFlow<PerformanceComparison> = performanceHistoryStore.history
+        .map { it.comparison }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = performanceHistoryStore.history.value.comparison,
+        )
+
+    /** The transport, bound to the session connection and released with this view model. */
+    private var performanceController: MediaSessionPerformanceController? = null
+
+    /** The window the running measurement was started with, so it can be stopped on time. */
+    private var measurementLength: PerformanceSessionLength? = null
 
     /** When the current item was asked to prepare, so first-frame latency can be measured. */
     private var prepareRequestedAtNanos: Long? = null
@@ -165,6 +214,9 @@ class PlayerViewModel(
             renderingCoordinator.onFirstFrameRendered(
                 latencyMs = requestedAt?.let { (System.nanoTime() - it) / NANOS_PER_MILLI },
             )
+            // A first frame is a meaningful state change, and one of the few moments a measurement is
+            // worth refreshing: no timer is involved, and nothing is published per frame.
+            readMeasurement()
         }
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -315,6 +367,87 @@ class PlayerViewModel(
         }
     }
 
+    /**
+     * Starts a measured session of [length] on the pipeline the engine was built for.
+     *
+     * The window is the client's to keep: it asks for a length, waits exactly that long, and asks the
+     * session to close. One wait, not a timer — nothing is polled, and nothing is published per frame.
+     *
+     * The two rates travel with the request because the engines that own them are here: the metadata
+     * engine measured the source's rate, and the refresh engine owns the display. This phase consumes
+     * both rather than deriving either.
+     */
+    fun startMeasurement(length: PerformanceSessionLength) {
+        if (_performanceReport.value.diagnostics.isMeasuring) return
+
+        viewModelScope.launch {
+            val controller = performanceController ?: return@launch
+            val result = runCatching {
+                controller.start(
+                    PerformanceSessionRequest(
+                        length = length,
+                        mode = _performanceReport.value.diagnostics.mode,
+                        sourceFps = refreshRateCoordinator.state.value.frameRate.fps,
+                        displayRefreshRateHz = refreshRateCoordinator.state.value.displayRefreshRateHz,
+                    ),
+                )
+            }.getOrElse { PerformanceCommandResult.Unreachable }
+
+            _performanceReport.value = result
+            if (result.unreachable || result.diagnostics.session?.isRunning != true) return@launch
+
+            measurementLength = length
+            // The controlled window, elapsed once. A session that is stopped early is closed by
+            // stopMeasurement instead, and the service closes one whose window has passed without it.
+            delay(length.durationMs)
+            measurementLength = null
+            closeMeasurement()
+        }
+    }
+
+    /** Ends the running measurement early, keeping what it measured. */
+    fun stopMeasurement() {
+        if (!_performanceReport.value.diagnostics.isMeasuring) return
+
+        measurementLength = null
+        viewModelScope.launch { closeMeasurement() }
+    }
+
+    /**
+     * Asks the session for the current picture.
+     *
+     * Called when the screen already knows something changed — a first frame, the end of a session —
+     * so a measurement updates without a timer and without per-frame work.
+     */
+    private fun readMeasurement() {
+        if (!_performanceReport.value.diagnostics.isMeasuring) return
+
+        viewModelScope.launch {
+            val controller = performanceController ?: return@launch
+            val result = runCatching { controller.read() }.getOrElse { PerformanceCommandResult.Unreachable }
+            if (!result.unreachable) _performanceReport.value = result
+        }
+    }
+
+    /**
+     * Closes the session and files the measurement under the pipeline it was taken on.
+     *
+     * A failed run is not filed: the diagnostics report the failure as a failure, and keeping its
+     * numbers beside a complete measurement would invite comparing nothing with something.
+     */
+    private suspend fun closeMeasurement() {
+        val controller = performanceController ?: return
+
+        val result = runCatching { controller.stop() }.getOrElse { PerformanceCommandResult.Unreachable }
+        if (result.unreachable) return
+
+        _performanceReport.value = result
+        val session = result.diagnostics.session
+        if (session != null && !session.isRunning) {
+            performanceHistoryStore.record(session.mode, result.diagnostics.snapshot)
+        }
+    }
+
     override fun onCleared() {
         // Restore the display before anything else: the preference belongs to this screen.
         refreshRateCoordinator.detach()
@@ -324,6 +457,10 @@ class PlayerViewModel(
         // The session goes on serving other screens; this view model just stops being able to ask it
         // for anything, so a request in flight cannot publish into a destroyed screen.
         processingCoordinator.unbindController()
+        // The measurement transport goes with it: a request in flight must not publish into a
+        // destroyed screen's state.
+        performanceController = null
+        measurementLength = null
 
         val controller = controller
         if (controller != null) {
@@ -351,7 +488,9 @@ class PlayerViewModel(
             ComponentName(context, MotionFlowMediaSessionService::class.java),
         )
 
-        val future = MediaController.Builder(context, sessionToken).buildAsync()
+        val future = MediaController.Builder(context, sessionToken)
+            .setListener(DisconnectionWatcher())
+            .buildAsync()
         controllerFuture = future
         future.addListener(
             {
@@ -382,8 +521,36 @@ class PlayerViewModel(
         // processing command reachable — or not, if the session does not offer it, which the
         // controller discovers per request rather than assuming here.
         processingCoordinator.bindController(MediaSessionProcessingController(controller))
+        // The measurement travels the same route, for the same reason: the recorder lives where the
+        // player lives, and a screen can only ask.
+        performanceController = MediaSessionPerformanceController(controller)
         loadSource(controller)
         syncState()
+    }
+
+    /**
+     * Drops the controller when the session releases it.
+     *
+     * The session is released deliberately when the measured pipeline changes — the engine is rebuilt
+     * for the new pipeline — so a screen can find itself holding a controller whose session is gone. A
+     * call on a released controller throws, so the reference is dropped and the screen falls back to
+     * its no-player state.
+     *
+     * No reconnection is attempted: a reconnect loop around a teardown that was intended would be a
+     * worse failure than an empty screen, and reopening the video connects again.
+     */
+    private inner class DisconnectionWatcher : MediaController.Listener {
+
+        override fun onDisconnected(controller: MediaController) {
+            if (this@PlayerViewModel.controller !== controller) return
+
+            Log.d(TAG, "Media session released; dropping the controller")
+            this@PlayerViewModel.controller = null
+            performanceController = null
+            measurementLength = null
+            _player.value = null
+            _performanceReport.value = PerformanceCommandResult.Unreachable
+        }
     }
 
     private fun loadSource(controller: MediaController) {

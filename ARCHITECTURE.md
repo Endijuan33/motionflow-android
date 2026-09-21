@@ -593,7 +593,63 @@ Design decisions worth keeping:
 - **Depth comes from tonal surfaces, not shadows.** Elevation stays low by design.
 - **Motion is short.** Chrome animates around moving pictures; the token scale caps at 400 ms.
 
-## 11. Build architecture
+## 11. Performance characterization
+
+### Two baselines, one engine
+
+```
+        Native:           MediaCodec -> Media3 video renderer -> SurfaceView -> display
+        Effect pipeline:  MediaCodec -> Media3 video renderer (frame processor armed) -> SurfaceView
+```
+
+The engine is built *for* a pipeline, because Media3 requires the effects pipeline to exist before
+`prepare()`. `PlayerFactory` therefore takes a `PlaybackConfiguration` and arms
+`ProcessingBaselines.effectsFor(mode)` -- the only place in the project that names an effect -- before it
+returns the engine, which is necessarily before anything can prepare it. `null` from that function means
+*do not call* `setVideoEffects` at all: an empty list would still make `MediaCodecVideoRenderer` build its
+frame processor, which would put the control condition on the very pipeline it is the control for.
+
+The effect itself is Media3's `AlphaScale(1f)`: documented as "no change is applied", reported as a no-op
+by `isNoOp`, identity matrices in its shader, and the same `configure()` size. `isNoOp` is never consulted
+by the playback path -- verified in `PlaybackVideoGraphWrapper` and `DefaultVideoFrameProcessor` -- so the
+pipeline genuinely runs, which is the point of measuring it.
+
+Changing the pipeline is an explicit restart rather than a switch: the session service observes the
+application's requested configuration, releases the session and the engine, and stops itself, so the next
+engine is built for the new pipeline. Rebuilding in place would mean a second place that creates a player,
+and "the engine is created in `onCreate` and nowhere else" is worth more than the convenience.
+
+### Where the numbers come from
+
+| Layer | Role |
+| --- | --- |
+| `FramePerformanceAccumulator` | All the arithmetic: deltas, the thermal peak, what was not measured. Pure, fed by events, no clock |
+| `PerformanceRecorder` | The adapter: one Media3 callback -> one accumulator call. Holds the counters, makes no decisions |
+| `PerformanceSessionCoordinator` | The session's lifecycle: one at a time, a controlled window, refused when nothing is loaded |
+| `PerformanceSessionContract` | The wire: three commands, one flat answer, and absent fields that stay absent |
+| `PerformanceCommandHandler` | Answers START, STOP and READ where the player lives, and closes a session whose window has passed |
+
+Counters are read at the two ends of a session rather than accumulated per event, so the overhead does not
+scale with frame count. Because the renderer's counter object is held between those reads, there is no
+per-drop callback to accumulate and no chance of counting the same drop twice.
+
+### What a null means, and what it does not
+
+A null field is *not measured*; a zero is a measurement of zero. The two are kept apart end to end --
+through the accumulator, the wire codec (which checks for a key rather than reading a default) and the
+panel, which prints "not measured". Metrics no Android version publishes at all are a third category: a
+property of the platform, named in `PerformanceMeasurementSupport`, and kept out of the per-session list so
+a device is never blamed for a gap in Android.
+
+### Measurement hygiene
+
+No per-frame logging, no disk, no network, no bitmaps, no screen capture, no polling. A snapshot is
+published when a session starts, when a command asks for it, and when a session ends. Thermal status
+arrives through a listener registered on the playback thread, so a device is asked once per change rather
+than sixty times a minute. The one timer in the feature is the client's single wait for the window it
+chose, and it is not a poll.
+
+## 12. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -609,14 +665,14 @@ Design decisions worth keeping:
   rather than one at a time.
 - **Reproducibility:** the Gradle wrapper is committed and pinned by version and SHA-256, Java is
   pinned by toolchain, and CI builds from a clean checkout with no developer-specific configuration.
-- **Media3 is pinned to `media3-common`/`exoplayer`/`session`/`ui` at one version.** The artifacts are
+- **Media3 is pinned to `media3-common`/`exoplayer`/`session`/`ui`/`effect` at one version.** The artifacts are
   released together and are not independently versioned in practice, so they move as a set. Only
   `media3-ui` is used for `PlayerView`; no ExoPlayer extensions (network stacks, decoders, cast) are
   declared, because local playback does not need them.
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 12. Testing strategy
+## 13. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
@@ -653,7 +709,7 @@ either engine.
 The rendering foundation has no I/O left to fake: the surface type and the metrics are events handed to
 it, so its state machine is tested directly, and the GPU is not probed anywhere.
 
-## 13. Deliberately absent
+## 14. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 

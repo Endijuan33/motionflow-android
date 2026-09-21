@@ -10,6 +10,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import com.motionflow.player.core.media.performance.android.ProcessingBaselines
 
 /**
  * Builds the playback engine.
@@ -40,12 +41,23 @@ internal object PlayerFactory {
      * Audio focus is handled by the player itself: playback pauses when another app takes focus and
      * resumes when it is returned. Headphones being unplugged pauses playback rather than switching
      * to the speaker.
+     *
+     * ## Why the configuration is a parameter
+     *
+     * Media3 requires the effects pipeline to exist before `prepare()`, so the pipeline is chosen while
+     * the engine is being built rather than during playback — and it is armed here, on the engine, before
+     * this function returns and therefore before anything can prepare it. That ordering is the whole
+     * reason the processing mode is a construction argument, and it is what makes the effect baseline a
+     * controlled condition instead of a mid-playback toggle.
      */
     // DefaultLoadControl, DefaultRenderersFactory and DefaultTrackSelector are Media3's
     // "unstable" surface: their behaviour is supported, their exact signatures are not frozen yet.
     // The annotation is written fully qualified because Kotlin also has a `kotlin.OptIn`.
     @androidx.annotation.OptIn(UnstableApi::class)
-    fun createExoPlayer(context: Context): ExoPlayer {
+    fun createExoPlayer(
+        context: Context,
+        configuration: PlaybackConfiguration = PlaybackConfiguration.Native,
+    ): ExoPlayer {
         val renderersFactory = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
 
@@ -58,13 +70,17 @@ internal object PlayerFactory {
             )
             .build()
 
-        Log.d(TAG, "Creating ExoPlayer instance")
+        Log.d(TAG, "Creating ExoPlayer instance for ${configuration.processingMode}")
 
         return ExoPlayer.Builder(context, renderersFactory)
             .setTrackSelector(DefaultTrackSelector(context))
             .setLoadControl(loadControl)
             .build()
             .apply {
+                // Absent for the native baseline — and absent means "not called at all", because an
+                // empty list would still arm the pipeline this baseline exists to avoid.
+                ProcessingBaselines.effectsFor(configuration.processingMode)?.let { setVideoEffects(it) }
+
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)

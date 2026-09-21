@@ -1,6 +1,6 @@
 # MotionFlow Roadmap
 
-Ten phases from an empty repository to a released product. Each phase is shippable on its own, and
+Eleven phases from an empty repository to a released product. Each phase is shippable on its own, and
 each has an exit criterion that can be checked rather than argued about.
 
 **Status legend:** ✅ complete · 🚧 in progress · ⏳ not started
@@ -259,39 +259,83 @@ graphics dependencies, and any claim that processing or acceleration is active.
 
 ---
 
-## Phase 7 — Interpolation Stage and AI Interpolation ⏳
+## Phase 7 — Processing Performance & Hardware Characterization ✅
 
-**Goal:** a stage that actually attaches, and then real quality interpolation behind it.
+**Goal:** find out, by measuring rather than assuming, whether Media3's effect pipeline is a viable
+foundation for a future interpolation stage.
+
+**Delivered**
+
+- The official identity effect, verified rather than assumed: `AlphaScale(1f)` is documented as "no change
+  is applied", reports `isNoOp`, uses identity matrices and the same output size — and Media3's playback
+  path never consults `isNoOp`, so the pipeline genuinely runs when it is armed.
+- Two measured baselines. The engine is built *for* a pipeline, with the effect armed before `prepare()`,
+  because Media3 requires it to exist that early. The control condition never calls `setVideoEffects` at
+  all: an empty list would still build the frame processor.
+- A measurement architecture with the arithmetic in a pure, event-fed accumulator and a thin Media3
+  adapter, so session lifecycle, frame-count aggregation, unavailable metrics and the comparison are all
+  testable on the JVM with no device.
+- A controlled session — 10, 30 or 60 seconds — started and stopped over the session command path, with
+  metrics that no Android version publishes named as unmeasurable instead of estimated.
+- CPU time, resident memory, managed heap and thermal status through public APIs only, sampled at the
+  session's two ends, with the thermal status arriving through a listener rather than a poll.
+- A comparison policy that reports differences and refuses to rank: no score, no verdict, no best mode.
+- 45 new unit tests (264 in total), including the refusal rules, the deltas, the absent-versus-zero
+  distinction, and the wire codec.
+
+**Exit criteria — met, pending hardware**
+
+- Both baselines exist, are selected deliberately, and cannot be confused with each other: the mode a
+  measurement was taken under travels with it, and the panel names it.
+- *Pending:* **no measurement has been taken on a device.** CI has no display, no decoder and no session,
+  so the architecture is unit-tested and the hardware run is documented as a procedure (`README.md`) with
+  its result to be recorded by hand. That is the honest state: this phase produced the instrument, and the
+  instrument has not yet been pointed at a device.
+- *Deviation:* switching pipelines stops playback, because Media3 requires the effects pipeline before
+  `prepare()`. Documented in the README, in `ARCHITECTURE.md`, and on the screen that offers the switch.
+- *Deviation:* "an identity effect if safely supported" was answered from the effect's own source rather
+  than by trying it and hoping — and it was supported, so baseline B is real rather than modelled.
+
+**Explicitly out of scope:** interpolation, generated frames, optical flow, motion estimation, motion
+vectors, frame synthesis, custom shaders, a custom renderer or `VideoFrameProcessor`, decoder replacement,
+frame retiming, frame duplication, dropped-frame algorithms, release-time manipulation, vendor-specific
+hacks, and any claim of a generated frame rate.
+
+---
+
+## Phase 8 — Interpolation Stage and AI Interpolation ⏳
+
+**Goal:** a stage that genuinely changes pictures, and then real quality interpolation behind it.
+
+**Depends on Phase 7's evidence.** The effect pipeline's cost — first-frame latency, dropped frames, CPU
+time, resident memory and thermal behaviour against the native baseline — is what says whether a stage can
+be afforded at all. Phase 7 deliberately produced the instrument rather than the conclusion; the
+conclusion is a hardware run whose numbers decide how much budget a stage has.
 
 **Scope**
 
-- Attaching a real stage, which Phase 6 made a single documented change: add
-  `androidx.media3:media3-effect` to the version catalog, arm the effects pipeline in
-  `MotionFlowPlayer` before the first `prepare()` — the cost of arming is a per-frame copy for the rest
-  of the session, so it must be a deliberate choice rather than a side effect — and replace
-  `PlayerProcessingEndpoint`'s enable branch with `ExoPlayer.setVideoEffects`. Nothing else moves.
-- The interpolator contract: given two frames and a phase, produce an intermediate frame.
+- The interpolator contract: given two frames and a phase, produce one intermediate frame.
 - Frame queueing, lookahead, and A/V sync when a stage adds latency.
-- Buffer ownership for the stage: colour-space and HDR handling, and shader-based scaling and
-  conversion, with Vulkan behind the same abstraction.
+- Buffer ownership for the stage: colour-space and HDR handling, and shader-based scaling and conversion,
+  with Vulkan behind the same abstraction.
 - RIFE-class model execution via ONNX Runtime or NCNN, with model loading, quantization and hardware
   delegation (GPU/NPU) where available.
-- Per-device throughput measurement and dynamic quality selection.
+- Per-device throughput measurement and dynamic quality selection, using Phase 7's measurement paths.
 - Deterministic fallback to plain playback when the budget is exceeded, and when a stage cannot attach.
 
 **Exit criteria**
 
-- A trivial (non-AI) interpolator can be enabled end to end without touching player or screen code,
-  and the diagnostics report processing as active only while a stage is genuinely attached.
-- Playback remains correct when interpolation is toggled mid-stream, with position, speed, repeat mode
-  and audio preserved, and a disable request returning the player to native rendering.
-- Sustained real-time interpolation at the target output rate on reference hardware, with graceful
-  fallback when inference cannot keep up.
+- A trivial (non-AI) interpolator can be enabled end to end without touching player or screen code, and the
+  diagnostics report processing as active only while a stage is genuinely attached.
+- Playback remains correct when interpolation is toggled mid-stream, with position, speed, repeat mode and
+  audio preserved.
+- Sustained real-time interpolation at the target output rate on reference hardware, with graceful fallback
+  when inference cannot keep up.
 - Zero GPU-side stalls attributable to buffer ownership over a playback soak.
 
 ---
 
-## Phase 8 — Adaptive Performance Management ⏳
+## Phase 9 — Adaptive Performance Management ⏳
 
 **Goal:** stay smooth and cool for the whole film, not the first five minutes.
 
@@ -308,7 +352,7 @@ graphics dependencies, and any claim that processing or acceleration is active.
 
 ---
 
-## Phase 9 — Production Hardening and Release ⏳
+## Phase 10 — Production Hardening and Release ⏳
 
 **Goal:** ship it.
 

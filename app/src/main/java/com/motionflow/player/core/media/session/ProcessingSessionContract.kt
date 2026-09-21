@@ -25,7 +25,7 @@ import com.motionflow.player.core.media.processing.ProcessingResult
  * `ConnectionResult.DEFAULT_SESSION_COMMANDS` contains the predefined session commands only — a custom
  * command is *not* among them. Sending an undeclared custom command is therefore refused before any
  * callback runs, which is a feature: the command is opt-in per controller, and
- * [ProcessingSessionCallback] opts only a trusted one in. The client checks availability first and
+ * [MotionFlowSessionCallback] opts only a trusted one in. The client checks availability first and
  * reports its own [ProcessingReason.COMMAND_UNAVAILABLE], so the refusal is diagnosed at the point it
  * can be explained rather than after a round trip.
  *

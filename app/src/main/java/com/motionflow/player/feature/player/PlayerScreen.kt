@@ -95,6 +95,15 @@ import com.motionflow.player.core.media.pacing.VideoCadence
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import com.motionflow.player.core.media.performance.DeviceCharacteristics
+import com.motionflow.player.core.media.performance.FramePerformanceSnapshot
+import com.motionflow.player.core.media.performance.PerformanceCommandResult
+import com.motionflow.player.core.media.performance.PerformanceComparison
+import com.motionflow.player.core.media.performance.PerformanceDiagnostics
+import com.motionflow.player.core.media.performance.PerformanceMeasurementSupport
+import com.motionflow.player.core.media.performance.PerformanceMetric
+import com.motionflow.player.core.media.performance.PerformanceSessionLength
+import com.motionflow.player.core.media.performance.ProcessingPerformanceMode
 import com.motionflow.player.core.media.processing.ProcessingCapabilities
 import com.motionflow.player.core.media.processing.ProcessingDiagnostics
 import com.motionflow.player.core.media.processing.ProcessingMode
@@ -129,6 +138,8 @@ fun PlayerScreen(
     val framePacing by viewModel.framePacingState.collectAsStateWithLifecycle()
     val rendering by viewModel.renderingDiagnostics.collectAsStateWithLifecycle()
     val processing by viewModel.processingDiagnostics.collectAsStateWithLifecycle()
+    val performance by viewModel.performanceReport.collectAsStateWithLifecycle()
+    val comparison by viewModel.performanceComparison.collectAsStateWithLifecycle()
 
     RequestMediaNotificationPermission()
     AttachRefreshRateEnvironment(viewModel)
@@ -140,6 +151,10 @@ fun PlayerScreen(
         framePacing = framePacing,
         rendering = rendering,
         processing = processing,
+        performance = performance,
+        comparison = comparison,
+        onStartMeasurement = viewModel::startMeasurement,
+        onStopMeasurement = viewModel::stopMeasurement,
         onSurfaceChange = { surfaceType ->
             if (surfaceType == null) {
                 viewModel.onRenderingSurfaceReleased()
@@ -213,6 +228,10 @@ private fun PlayerContent(
     framePacing: FramePacingState,
     rendering: RenderingDiagnostics,
     processing: ProcessingDiagnostics,
+    performance: PerformanceCommandResult,
+    comparison: PerformanceComparison,
+    onStartMeasurement: (PerformanceSessionLength) -> Unit,
+    onStopMeasurement: () -> Unit,
     onSurfaceChange: (SurfaceType?) -> Unit,
     onNavigateBack: () -> Unit,
     onPlayPause: () -> Unit,
@@ -290,6 +309,13 @@ private fun PlayerContent(
         FramePacingDiagnostics(state = framePacing)
 
         RenderingSection(diagnostics = rendering, processing = processing)
+
+        PerformanceSection(
+            report = performance,
+            comparison = comparison,
+            onStart = onStartMeasurement,
+            onStop = onStopMeasurement,
+        )
     }
 }
 
@@ -979,6 +1005,210 @@ private fun processingValue(processing: ProcessingDiagnostics): String = stringR
 )
 
 /**
+ * What was measured, on which pipeline, and what could not be measured at all.
+ *
+ * A development surface, and an honest one: every number here was measured during a session the user
+ * started, every gap says "not measured" rather than showing a zero, and the metrics no Android version
+ * publishes are named rather than omitted. There is no speed, rate or verdict anywhere — a rendered-frame
+ * count divided by a duration is not a frame rate, and the panel says only what was counted.
+ *
+ * The source's rate and the display's rate are deliberately *not* repeated here: the refresh, pacing and
+ * processing rows above already report them, and a second copy could disagree with the first.
+ */
+@Composable
+private fun PerformanceSection(
+    report: PerformanceCommandResult,
+    comparison: PerformanceComparison,
+    onStart: (PerformanceSessionLength) -> Unit,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = MotionFlowTheme.spacing
+    val diagnostics = report.diagnostics
+    val snapshot = diagnostics.snapshot
+    val session = diagnostics.session
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.large, vertical = spacing.small),
+        verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+    ) {
+        Text(
+            text = stringResource(
+                R.string.performance_label,
+                if (diagnostics.isMeasuring) {
+                    stringResource(
+                        R.string.performance_running,
+                        session?.length?.let { "${it.seconds} s" }.orEmpty(),
+                    )
+                } else {
+                    stringResource(R.string.performance_idle)
+                },
+            ),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Text(
+            text = stringResource(R.string.performance_mode, processingModeValue(diagnostics.mode)),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        measuredLine(R.string.performance_first_frame, snapshot.firstFrameLatencyMs?.let { "$it ms" })
+        measuredLine(R.string.performance_rendered, snapshot.renderedFrames?.toString())
+        measuredLine(R.string.performance_dropped, snapshot.droppedFrames?.toString())
+        measuredLine(
+            R.string.performance_processing_offset,
+            snapshot.averageFrameProcessingOffsetMs?.let { "${"%.2f".format(it)} ms" },
+        )
+        measuredLine(
+            R.string.performance_session,
+            session?.measuredDurationMs?.let { "${it / PerformanceSessionLength.MILLIS_PER_SECOND} s" },
+        )
+        measuredLine(
+            R.string.performance_decoder_init,
+            snapshot.decoderInitializationMs?.let { "$it ms" },
+        )
+        measuredLine(R.string.performance_cpu, snapshot.cpuTimeMs?.let { "$it ms" })
+        measuredLine(R.string.performance_memory, snapshot.processPssKb?.let { "$it KB" })
+        measuredLine(R.string.performance_thermal, snapshot.thermalStatusPeak?.toString())
+
+        if (diagnostics.support.unsupported.isNotEmpty()) {
+            Text(
+                text = stringResource(
+                    R.string.performance_unavailable_platform,
+                    diagnostics.support.unsupported.joinToString(UNLISTED_METRIC_SEPARATOR) {
+                        stringResource(metricLabel(it))
+                    },
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        measurementNote(report, diagnostics.mode)
+
+        PerformanceComparisonSection(comparison)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
+            if (diagnostics.isMeasuring) {
+                Button(onClick = onStop) {
+                    Text(
+                        text = stringResource(R.string.performance_stop_action),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            } else {
+                MEASUREMENT_LENGTHS.forEach { length ->
+                    Button(onClick = { onStart(length) }) {
+                        Text(
+                            text = stringResource(R.string.performance_start_action, length.seconds),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One measurement row, or "not measured" — never a zero standing in for a reading that does not exist. */
+@Composable
+private fun measuredLine(label: Int, value: String?) {
+    Text(
+        text = stringResource(label, value ?: stringResource(R.string.performance_not_measured)),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * Why there is no measurement, when there is not one.
+ *
+ * A refusal, an unreachable session and a failed pipeline are three different findings, and the panel
+ * says which one applies rather than leaving a reader to guess from an empty field.
+ */
+@Composable
+private fun measurementNote(report: PerformanceCommandResult, mode: ProcessingPerformanceMode): String? = when {
+    report.unreachable -> stringResource(R.string.performance_note_unreachable)
+    mode == ProcessingPerformanceMode.FAILED -> stringResource(R.string.performance_note_failed)
+    report.refusal != null -> stringResource(R.string.performance_note_refused)
+    report.diagnostics.session == null -> stringResource(R.string.performance_note_no_media)
+    else -> null
+}
+
+/**
+ * The two pipelines side by side: differences only, with no winner.
+ *
+ * A delta appears only when both baselines measured it, and the format says which direction it points,
+ * because "the effect pipeline presented its first frame 75 ms later" is a finding while "effect
+ * pipeline: worse" would be an opinion this application has no basis for.
+ */
+@Composable
+private fun PerformanceComparisonSection(comparison: PerformanceComparison) {
+    val spacing = MotionFlowTheme.spacing
+
+    Text(
+        text = stringResource(R.string.performance_comparison_label),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (!comparison.hasBothBaselines) {
+        Text(
+            text = stringResource(R.string.performance_comparison_missing),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(spacing.extraSmall)) {
+        comparison.firstFrameLatencyDeltaMs?.let {
+            measuredLine(R.string.performance_comparison_first_frame, "${it} ms")
+        }
+        comparison.renderedFramesDelta?.let {
+            measuredLine(R.string.performance_comparison_rendered, it.toString())
+        }
+        comparison.droppedFramesDelta?.let {
+            measuredLine(R.string.performance_comparison_dropped, it.toString())
+        }
+        comparison.cpuTimeDeltaMs?.let {
+            measuredLine(R.string.performance_comparison_cpu, "${it} ms")
+        }
+        comparison.processPssDeltaKb?.let {
+            measuredLine(R.string.performance_comparison_pss, "${it} KB")
+        }
+    }
+}
+
+private fun processingModeValue(mode: ProcessingPerformanceMode): Int = when (mode) {
+    ProcessingPerformanceMode.NATIVE -> R.string.processing_mode_native
+    ProcessingPerformanceMode.EFFECT_PIPELINE -> R.string.processing_mode_effect_pipeline
+    ProcessingPerformanceMode.FAILED -> R.string.processing_mode_failed
+}
+
+private fun metricLabel(metric: PerformanceMetric): Int = when (metric) {
+    PerformanceMetric.GPU_UTILISATION -> R.string.performance_metric_gpu
+    PerformanceMetric.THERMAL_HEADROOM -> R.string.performance_metric_thermal_headroom
+    PerformanceMetric.BATTERY_DRAIN -> R.string.performance_metric_battery
+    // Every other metric is measurable on the platforms this application supports, so the list above
+    // is the whole of it; a label for the rest would be unreachable wording.
+    else -> R.string.performance_not_measured
+}
+
+/** The controlled windows. A measurement that can be any length is hard to compare with the next one. */
+private val MEASUREMENT_LENGTHS = listOf(
+    PerformanceSessionLength.TEN,
+    PerformanceSessionLength.THIRTY,
+    PerformanceSessionLength.SIXTY,
+)
+
+private const val UNLISTED_METRIC_SEPARATOR = ", "
+
+/**
  * The reason, when there is one to read.
  *
  * A note appears for a refused request and for an unavailable path, and never for the default state:
@@ -1154,6 +1384,38 @@ private fun renderingPreview(firstFrameLatencyMs: Long? = null): RenderingDiagno
     )
 
 /**
+ * Builds a measurement report for previews: a completed session on the native pipeline, with the
+ * numbers a real one would carry. Nothing here is a rate, a speed or a verdict — only counts and
+ * durations, which is all the panel can show.
+ */
+private fun performancePreview(): PerformanceCommandResult = PerformanceCommandResult(
+    diagnostics = PerformanceDiagnostics(
+        mode = ProcessingPerformanceMode.NATIVE,
+        session = null,
+        snapshot = FramePerformanceSnapshot(
+            renderedFrames = 1_438,
+            droppedFrames = 2,
+            firstFrameLatencyMs = 412L,
+            decoderInitializationMs = 120L,
+            playbackPositionMs = 30_000L,
+            measurementDurationMs = 30_000L,
+            videoWidth = 1920,
+            videoHeight = 1080,
+            cpuTimeMs = 4_120L,
+            processPssKb = 184_320L,
+        ),
+        support = PerformanceMeasurementSupport.forApiLevel(36),
+        device = DeviceCharacteristics(apiLevel = 36, primaryAbi = "arm64-v8a", memoryClassMb = 512),
+    ),
+)
+
+/** Builds a comparison for previews: differences with no winner, as the model insists. */
+private fun comparisonPreview(): PerformanceComparison = PerformanceComparison(
+    native = FramePerformanceSnapshot(firstFrameLatencyMs = 412L, renderedFrames = 1_438, droppedFrames = 2),
+    effectPipeline = FramePerformanceSnapshot(firstFrameLatencyMs = 487L, renderedFrames = 1_436, droppedFrames = 7),
+)
+
+/**
  * Builds a processing state for previews: a surface is bound, a stage could be attached, and none is
  * — the steady state of the application. The active state is never previewed, because nothing in this
  * version can reach it.
@@ -1235,10 +1497,14 @@ private fun PlayerContentPreview() {
             framePacing = pacingPreview(videoFps = 23.976f, displayHz = 24f),
             rendering = renderingPreview(firstFrameLatencyMs = 412L),
             processing = processingPreview(),
+            performance = performancePreview(),
+            comparison = comparisonPreview(),
             onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
+            onStartMeasurement = {},
+            onStopMeasurement = {},
             onCycleSpeed = {},
             onToggleRepeat = {},
             onSetAutomaticRefreshRate = {},
@@ -1272,10 +1538,16 @@ private fun PlayerErrorPreview() {
                 mode = ProcessingMode.PROCESSING_UNAVAILABLE,
                 reason = ProcessingReason.NO_SURFACE,
             ),
+            performance = PerformanceCommandResult(
+                diagnostics = PerformanceDiagnostics.Idle,
+            ),
+            comparison = PerformanceComparison(),
             onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
+            onStartMeasurement = {},
+            onStopMeasurement = {},
             onCycleSpeed = {},
             onToggleRepeat = {},
             onSetAutomaticRefreshRate = {},

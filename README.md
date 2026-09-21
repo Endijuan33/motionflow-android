@@ -30,14 +30,17 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 6 — Frame Processing Architecture. Complete.**
+**Phase 7 — Processing Performance & Hardware Characterization. Complete.**
 
 The application plays a local video end to end, describes it, asks the display to refresh at a rate
-that suits the video's cadence, reports how well those rates line up, describes the rendering path
-itself, and now also has a verified route for a future processing stage — a session command that
-reaches the process-owned player — with diagnostics that say precisely why no stage is attached.
-**No processing stage is attached**, no graphics dependency is present, and nothing is rendered by
-this application.
+that suits the video's cadence, reports how well those rates line up, describes the rendering path, says
+whether a processing stage is attached, and now **measures** that path: a controlled 10, 30 or 60 second
+session, taken on either pipeline, reported as counts, durations and deltas.
+
+**No interpolation exists**, and the effect-pipeline baseline does not implement any. It puts Media3's own
+frame processor in the path with an identity effect that changes nothing about the picture, so what is
+measured is the *cost of the pipeline*, not a quality improvement. Nothing in the application reports a
+generated frame rate or claims a speed-up.
 
 What exists now:
 
@@ -552,23 +555,115 @@ resolves Gradle itself.
 | 3 | **Adaptive Display Refresh Rate** | Match the display's own modes to the video's cadence. **✅ complete** |
 | 4 | **Frame Pacing Engine** | Cadence analysis and pacing diagnostics. **✅ complete** |
 | 5 | **Rendering Pipeline Foundation** | Path described, ownership asserted. **✅ complete** |
-| 6 | **Frame Processing Architecture** | Effect API verified, request path proven, no stage attached. **✅ complete** |
-| 7 | Interpolation Stage and AI Interpolation | A stage that attaches, then RIFE-class models with thermal-aware fallbacks |
-| 8 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
-| 9 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
+| 6 | **Frame Processing Architecture** | Effect API verified, request path proven. **✅ complete** |
+| 7 | **Processing Performance & Hardware Characterization** | Two measured baselines, metric availability named, hardware procedure documented. **✅ complete** |
+| 8 | **Interpolation Stage and AI Interpolation** | A stage that attaches for real, then RIFE-class models with thermal-aware fallbacks |
+| 9 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
+| 10 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
 
 [`ROADMAP.md`](ROADMAP.md) tracks scope and exit criteria per phase.
 
+## Performance characterization
+
+A measurement is a controlled window — 10, 30 or 60 seconds — taken on one of two pipelines, reported as
+counts and durations. Nothing is measured outside a session the user started, nothing is uploaded, and
+nothing is written to disk.
+
+```
+Native            Baseline A:  MediaCodec → Media3 video renderer → SurfaceView → display
+Effect pipeline   Baseline B:  MediaCodec → Media3 video renderer (with Media3's frame processor) → SurfaceView → display
+```
+
+### What each baseline is
+
+| | Measured by | The effect in the path |
+| --- | --- | --- |
+| Native | The control condition, and the default | None — `setVideoEffects` is not called at all |
+| Effect pipeline | The same player, built for a different pipeline | `AlphaScale(1f)`, Media3's own identity effect |
+
+`AlphaScale(1f)` is the safest pass-through Media3 1.11.1 publishes, and it is documented as one: *"An
+alphaScale value of 1 means no change is applied"*, `isNoOp()` returns true for it, its shader sets the
+identity transformation and texture matrices, and its `configure()` returns the input size unchanged. It
+carries no timing behaviour, no rate change, no audio path and nothing that could influence the display
+mode. Media3's *playback* path never consults `isNoOp` — verified by reading `PlaybackVideoGraphWrapper`
+and `DefaultVideoFrameProcessor` — so the effect is not skipped: the pipeline really runs, which is what
+makes it worth measuring.
+
+### Why switching pipelines restarts the player
+
+Media3 requires the effects pipeline to exist before `prepare()`, so the pipeline is chosen while the
+engine is being built, never during playback. The choice is made on the Home screen, before a video is
+opened; changing it releases the session and the engine so the next one is built for the new pipeline.
+**That stops playback and drops the current video**, which is why the screen says so before the button is
+pressed. This is the phase's stated measurement limitation, not a hidden behaviour.
+
+### What is measured, and what is not
+
+| Metric | Source | Availability |
+| --- | --- | --- |
+| Rendered frames | `DecoderCounters.renderedOutputBufferCount`, read at both ends of the session | Available, both pipelines |
+| Dropped frames | `DecoderCounters.droppedBufferCount`, same read | Available, both pipelines |
+| First-frame latency | `AnalyticsListener.onRenderedFirstFrame`'s `renderTimeMs` | Available, both pipelines |
+| Decoder initialisation | `AnalyticsListener.onVideoDecoderInitialized` | Available, both pipelines |
+| Frame-processing offset | `AnalyticsListener.onVideoFrameProcessingOffset` | **Effect pipeline only**: the native path has no frame processor, so a zero would be a false claim |
+| Playback position, video size | `Player.currentPosition`, `onVideoSizeChanged` | Available, both pipelines |
+| Process CPU time | `android.os.Process.getElapsedCpuTime()`, as a delta | Available |
+| Resident memory (PSS) | `android.os.Debug.getPss()`, in kB | Available |
+| Managed heap | `Runtime.totalMemory() - freeMemory()`, in bytes | Available, and only the managed part |
+| Thermal status | `PowerManager.getCurrentThermalStatus()`, reported by a listener | API 29+, and no polling |
+| Thermal headroom | — | **Not measurable**: `getThermalHeadroom` is not public API |
+| GPU utilisation | — | **Not measurable**: Android publishes no such reading on any version, and inferring it from CPU time would be a fabrication |
+| Battery drain | — | **Not measurable**: no API attributes consumption to one session, and deriving it from elapsed time is arithmetic dressed up as measurement |
+
+A rendered-frame count is never divided by the session duration to produce a frame rate. The count is a
+count, the source's rate comes from the metadata engine, and the display's rate comes from the refresh
+engine — five separate facts, never conflated.
+
+### Running a hardware test
+
+The numbers this phase produces exist only on a device: CI has no display, no decoder and no session, so
+it tests the architecture and nothing more. The procedure is:
+
+1. **Install the debug APK** from the CI artifact, or build `:app:assembleDebug` yourself.
+2. **Open the app** and choose **Playback pipeline → Native** on Home.
+3. **Open a video** with *Open video*, pick a local file, and let it play for a moment to confirm it
+   behaves normally.
+4. **Start a measurement** from the player's *Measurement* row — `Measure 30 s` for the standard window.
+   Leave playback running; the session ends by itself and reports its numbers.
+5. **Record the result**: first frame, rendered, dropped, frame-processing offset, decoder init, CPU,
+   PSS, thermal status, and the session duration. A metric the session could not read shows
+   `not measured`; the metrics Android cannot measure are listed under the panel.
+6. **Repeat** the run two or three times per pipeline. A single run is an anecdote, and a fixed-cadence
+   video on a fixed display should be repeatable within a few frames.
+7. **Switch to the effect-pipeline baseline**: go back to Home, choose **Playback pipeline → Effect
+   pipeline** (this stops playback, as the screen warns), then repeat steps 3 to 6 on the same file.
+8. **Compare**: the player shows the native-versus-effect differences for the metrics both runs measured.
+   It reports deltas, never a winner.
+
+Suggested matrix, where the device and the files allow it: 23.976, 24, 25, 29.97, 30, 50, 59.94 and 60
+fps sources against a 60, 90 or 120 Hz display. The refresh-rate engine chooses the display mode; a
+measurement never does. If a file is unavailable, no file is fabricated and no measurement is invented.
+
 ## Known Limitations
 
+- **No measurement has been taken on a device.** CI has no display, no decoder and no media session, so
+  every number this phase can produce is a number the architecture *can* produce: the aggregation, the
+  session rules, the wire codec and the comparison are unit-tested, and the effect pipeline itself is
+  marked pending hardware verification. See "Performance characterization" above for the procedure.
+- **Switching pipelines stops playback**, by Media3's own rule rather than by choice: the effects pipeline
+  has to exist before `prepare()`. Documented, and stated on the screen that offers the switch.
+- **A processing offset is only comparable within the effect pipeline.** The native path has no frame
+  processor, so the comparison leaves that delta empty rather than subtracting zero.
+- **GPU utilisation, thermal headroom and battery drain are not measured on any device**, because no
+  public Android API provides them. They are named in the panel rather than silently omitted.
 - **Nothing is GPU-processed, and nothing is interpolated.** `core/media/rendering` describes Media3's
-  own path, and `core/media/processing` says whether a stage is attached. Nothing is attached: no
-  shader, no graphics dependency, no surface of this application's own. `Processing: inactive` is the
-  honest state, not a placeholder for something running quietly.
-- **A processing stage cannot be attached from this build.** `ExoPlayer.setVideoEffects` requires
-  `androidx.media3:media3-effect` on the runtime classpath and is guarded by its own check, and the
-  effects pipeline has to be armed before `prepare()`. The request path is complete and tested; the
-  attachment is Phase 7's work. See "Frame processing" above.
+  own path, and `core/media/processing` says whether a stage is attached. The effect-pipeline baseline
+  attaches an identity effect and measures the pipeline's cost; it changes nothing about the picture and
+  generates no frame.
+- **The effect-pipeline baseline exists only as a measurement.** AndroidX Media3's effects module is
+  linked, and the engine arms Media3's own identity effect when that pipeline is selected — which is what
+  makes the baseline real. The *interactive* processing request path from Phase 6 still refuses every
+  enable, because a stage that changes pictures does not exist. See "Frame processing" above.
 - **Frame release cannot be controlled.** `VideoFrameMetadataListener` reports a frame's release time
   and cannot change it; influencing presentation timing needs a custom renderer. See "Rendering path"
   above.

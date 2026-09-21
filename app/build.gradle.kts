@@ -77,6 +77,10 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.ui)
+    // Effects, for the measured effect-pipeline baseline only. Referenced from exactly one place
+    // (`ProcessingBaselines`), which is what keeps a graphics dependency from spreading: no shader,
+    // no EGL and no renderer of this application's own exists anywhere.
+    implementation(libs.androidx.media3.effect)
 
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)

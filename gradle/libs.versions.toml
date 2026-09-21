@@ -39,6 +39,13 @@ androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplaye
 androidx-media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 
+# The effects module, and the only graphics dependency in the project. ExoPlayerImpl.setVideoEffects
+# refuses to run without it (it looks up androidx.media3.effect.SingleInputVideoGraph$Factory and
+# throws otherwise), so the effect-pipeline measurement baseline cannot exist without it. Verified:
+# its AAR metadata declares minCompileSdk 36, and its own dependency graph adds only media3-common,
+# media3-datasource, kotlin-stdlib, annotation, concurrent-futures and kotlinx-coroutines-guava.
+androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "media3" }
+
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }

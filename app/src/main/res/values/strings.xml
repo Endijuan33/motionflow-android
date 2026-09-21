@@ -120,4 +120,44 @@
     <string name="processing_note_refused">The player declined the processing request.</string>
     <string name="processing_note_command_unavailable">This session does not offer the processing command.</string>
     <string name="processing_note_transport_failed">The session did not answer the processing request.</string>
+
+    <!-- Performance characterization. The wording must say exactly what is measured: a pipeline, never
+         a frame rate, never an improvement, never interpolation. There is deliberately no string naming
+         an output frame rate or a quality verdict, because the application produces neither. -->
+    <string name="processing_mode_label">Playback pipeline</string>
+    <string name="processing_mode_native">Native</string>
+    <string name="processing_mode_effect_pipeline">Effect pipeline</string>
+    <string name="processing_mode_failed">Failed</string>
+    <string name="processing_mode_note">Switching pipelines stops playback and rebuilds the player, because the effects pipeline must exist before playback starts.</string>
+    <string name="performance_label">Measurement: %1$s</string>
+    <string name="performance_idle">not running</string>
+    <string name="performance_running">measuring %1$s</string>
+    <string name="performance_start_action">Measure %1$d s</string>
+    <string name="performance_stop_action">Stop</string>
+    <string name="performance_mode">Mode: %1$s</string>
+    <string name="performance_first_frame">First frame: %1$s</string>
+    <string name="performance_rendered">Rendered: %1$s</string>
+    <string name="performance_dropped">Dropped: %1$s</string>
+    <string name="performance_processing_offset">Frame processing offset: %1$s</string>
+    <string name="performance_session">Session: %1$s</string>
+    <string name="performance_decoder_init">Decoder init: %1$s</string>
+    <string name="performance_cpu">CPU time: %1$s</string>
+    <string name="performance_memory">PSS: %1$s</string>
+    <string name="performance_thermal">Thermal: %1$s</string>
+    <string name="performance_not_measured">not measured</string>
+    <string name="performance_unavailable_platform">Not measurable on this platform: %1$s</string>
+    <string name="performance_metric_gpu">GPU utilisation</string>
+    <string name="performance_metric_thermal_headroom">thermal headroom</string>
+    <string name="performance_metric_battery">battery drain</string>
+    <string name="performance_comparison_label">Native vs effect pipeline</string>
+    <string name="performance_comparison_missing">Measure a session on each pipeline to compare them.</string>
+    <string name="performance_comparison_first_frame">First frame %1$s</string>
+    <string name="performance_comparison_rendered">Rendered %1$s</string>
+    <string name="performance_comparison_dropped">Dropped %1$s</string>
+    <string name="performance_comparison_cpu">CPU %1$s</string>
+    <string name="performance_comparison_pss">PSS %1$s</string>
+    <string name="performance_note_no_media">Open a video before measuring: a measurement of nothing would look like a result.</string>
+    <string name="performance_note_refused">The player declined the measurement.</string>
+    <string name="performance_note_unreachable">The session did not answer the measurement request.</string>
+    <string name="performance_note_failed">The effect pipeline failed during this measurement, so these numbers describe a run that did not complete.</string>
 </resources>
