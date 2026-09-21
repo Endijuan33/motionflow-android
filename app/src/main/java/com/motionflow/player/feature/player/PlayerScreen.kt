@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -1076,12 +1077,13 @@ private fun PerformanceSection(
         measuredLine(R.string.performance_thermal, snapshot.thermalStatusPeak?.toString())
 
         if (diagnostics.support.unsupported.isNotEmpty()) {
+            // The labels are resolved first: `joinToString` is not an inline function, so a composable
+            // call cannot live inside it. `map` is inline, which is why the reading happens here.
+            val unsupportedLabels = diagnostics.support.unsupported.map { stringResource(metricLabel(it)) }
             Text(
                 text = stringResource(
                     R.string.performance_unavailable_platform,
-                    diagnostics.support.unsupported.joinToString(UNLISTED_METRIC_SEPARATOR) {
-                        stringResource(metricLabel(it))
-                    },
+                    unsupportedLabels.joinToString(UNLISTED_METRIC_SEPARATOR),
                 ),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

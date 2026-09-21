@@ -143,7 +143,11 @@ class PerformanceRecorder(
      * The native baseline never sees this callback, which is why the metric is reported as unavailable
      * there rather than as a processor that kept up perfectly.
      */
-    override fun onFrameProcessingOffset(eventTime: EventTime, totalProcessingOffsetUs: Long, frameCount: Int) {
+    override fun onVideoFrameProcessingOffset(
+        eventTime: EventTime,
+        totalProcessingOffsetUs: Long,
+        frameCount: Int,
+    ) {
         accumulator.onFrameProcessingOffset(totalProcessingOffsetUs, frameCount)
     }
 
