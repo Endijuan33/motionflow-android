@@ -134,7 +134,7 @@ class PerformanceSessionCoordinatorTest {
         )
 
         assertTrue(outcome.accepted)
-        assertEquals(PerformanceProcessingMode.EFFECT_PIPELINE, outcome.session?.mode)
+        assertEquals(ProcessingPerformanceMode.EFFECT_PIPELINE, outcome.session?.mode)
         assertEquals(30_000L, outcome.session?.measuredDurationMs)
         assertEquals(1_436, coordinator.diagnostics.value.snapshot.renderedFrames)
     }
