@@ -18,7 +18,14 @@ enum class ProcessingReason {
      * A build fact rather than a device fact. Media3 1.11.1's `ExoPlayerImpl.setVideoEffects` begins
      * with `Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")` and throws
      * `IllegalStateException("Could not find required lib-effect dependencies.")` when the lookup
-     * fails, so on this classpath that call cannot be made at all — not even to clear the effect list.
+     * fails, so on a classpath without that module the call cannot be made at all — not even to clear
+     * the effect list.
+     *
+     * Phase 7 linked the module for the measured effect-pipeline baseline, so this is no longer the
+     * reason an interactive processing request is refused: the endpoint reports its build fact, and
+     * today that fact is `true`. The value is kept because it is the honest answer if the dependency is
+     * ever removed, and because a panel should be able to name a missing prerequisite rather than a
+     * missing stage when a prerequisite is what a build is missing.
      */
     EFFECTS_MODULE_ABSENT,
 

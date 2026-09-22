@@ -16,26 +16,28 @@ import org.junit.Test
 class PlayerProcessingEndpointTest {
 
     @Test
-    fun `an enable request is refused because this build has no effects module`() {
+    fun `an enable request is refused for the missing stage`() {
+        // The build fact is true since Phase 7 linked the effects module, so the reason names the thing
+        // that is actually missing: a stage that changes pictures.
         val endpoint = PlayerProcessingEndpoint()
 
         val result = endpoint.onRequest(ProcessingRequest.ENABLE)
 
         assertEquals(ProcessingOutcome.REFUSED, result.outcome)
-        assertEquals(ProcessingReason.EFFECTS_MODULE_ABSENT, result.reason)
+        assertEquals(ProcessingReason.NO_STAGE_IMPLEMENTED, result.reason)
         assertTrue("a refusal never reports an attachment", !result.attached)
     }
 
     @Test
-    fun `with the module linked, an enable is refused for the missing stage instead`() {
-        val endpoint = PlayerProcessingEndpoint(effectsModuleLinked = true)
+    fun `on a classpath without the effects module, the reason names the dependency`() {
+        val endpoint = PlayerProcessingEndpoint(effectsModuleLinked = false)
 
         val result = endpoint.onRequest(ProcessingRequest.ENABLE)
 
         assertEquals(ProcessingOutcome.REFUSED, result.outcome)
         assertEquals(
-            "the reason names the next thing to build, not the last one to fix",
-            ProcessingReason.NO_STAGE_IMPLEMENTED,
+            "a missing prerequisite is named as itself, not as a missing stage",
+            ProcessingReason.EFFECTS_MODULE_ABSENT,
             result.reason,
         )
     }

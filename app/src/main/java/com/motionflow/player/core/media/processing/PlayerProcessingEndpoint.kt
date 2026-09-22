@@ -10,24 +10,20 @@ package com.motionflow.player.core.media.processing
  *
  * ## What it does, and why it is not more
  *
- * It answers every request with the truth and attaches nothing, because in this build nothing can be
- * attached. Two verified facts, both specific to Media3 1.11.1, are the reason:
+ * It answers every request with the truth and attaches nothing, because this application has no stage
+ * to give it. One verified fact, specific to Media3 1.11.1, is the reason, and one is a decision:
  *
- * 1. **The effects module is not on the classpath.** `ExoPlayerImpl.setVideoEffects` is guarded by
- *    `Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")` and throws
- *    `IllegalStateException("Could not find required lib-effect dependencies.")` when that lookup
- *    fails. The guard runs on *every* call, so `setVideoEffects(emptyList())` throws too — there is no
- *    safe way to call the API from this build, not even to clear it. Supporting it means adding
- *    `androidx.media3:media3-effect`, a graphics module whose shaders compile frame copies on the GPU,
- *    and adding that would be an active processing path rather than the inactive seam this phase is
- *    allowed to introduce.
- * 2. **Even with the module, the pipeline cannot be armed on demand.** `setVideoEffects` must be called
- *    before the video renderer is first enabled for the effects pipeline to exist
- *    (`MediaCodecVideoRenderer.onEnabled` builds the sink only while its effects field is non-null),
- *    while the effects themselves may be replaced afterwards. Attaching on request therefore cannot be
- *    the call that creates the pipeline; making on-demand attachment possible would mean installing a
- *    pass-through graphics pipeline for every session up front — a per-frame copy for people who never
- *    request processing.
+ * 1. **The pipeline cannot be armed on demand.** `setVideoEffects` must be called before the video
+ *    renderer is first enabled for the effects pipeline to exist (`MediaCodecVideoRenderer.onEnabled`
+ *    builds the sink only while its effects field is non-null), while the effects themselves may be
+ *    replaced afterwards. Attaching on request therefore cannot be the call that creates the pipeline;
+ *    making on-demand attachment possible would mean installing a pass-through graphics pipeline for
+ *    every session up front — a per-frame copy for people who never request processing.
+ * 2. **Nothing here implements a stage that changes pictures.** Phase 7 links
+ *    `androidx.media3:media3-effect` and arms Media3's identity effect for the *measured* baseline,
+ *    built into the engine before `prepare()`. That is a measurement condition, not an interactive
+ *    feature: this endpoint's enable branch stays a refusal, and [effectsModuleLinked] records whether
+ *    the dependency the call would need is even present.
  *
  * So the request is answered, refused, and recorded; playback keeps the path it had. Nothing here
  * touches a frame, a timestamp, a surface, the decoder or the display, and a refusal cannot make
@@ -35,10 +31,9 @@ package com.motionflow.player.core.media.processing
  *
  * ## What a later phase changes
  *
- * Exactly this class, and exactly two things: the dependency in the version catalog, and the enable
- * branch below becoming `ExoPlayer.setVideoEffects(effects)` with [effectsModuleLinked] left at its
- * default. Nothing else in the application has to move, which is the property this phase exists to
- * establish.
+ * The enable branch below, and the engine's configuration — which Phase 7 already showed how to do:
+ * the pipeline is chosen while the engine is built, never during playback. Nothing else in the
+ * application has to move, which is the property these phases exist to establish.
  */
 class PlayerProcessingEndpoint(
 
@@ -46,10 +41,11 @@ class PlayerProcessingEndpoint(
      * Whether this build links `androidx.media3:media3-effect`, which `setVideoEffects` requires.
      *
      * A build fact, not a device fact, and a parameter rather than a constant so that the branch below
-     * is real executable code that a test can drive both ways instead of dead code a compiler warns
-     * about. False for this application.
+     * is real executable code a test can drive both ways rather than dead code a compiler warns about.
+     * True since Phase 7 linked the module; the refusal reason follows it, so the diagnostics would name
+     * the dependency again if it were ever removed.
      */
-    private val effectsModuleLinked: Boolean = false,
+    private val effectsModuleLinked: Boolean = true,
 ) {
 
     /**
