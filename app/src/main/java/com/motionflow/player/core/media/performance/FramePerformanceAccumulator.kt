@@ -61,9 +61,16 @@ class FramePerformanceAccumulator {
         started = false
     }
 
-    /** Records that a frame reached the screen, [latencyMs] after `prepare()` was called. */
+    /**
+     * Records that a frame reached the screen, [latencyMs] after `prepare()` was called.
+     *
+     * The first frame happens once, so the first reading is the reading: a later report describes an
+     * event that has already happened, and overwriting with it would turn "how long start-up took" into
+     * "the most recent number Media3 sent".
+     */
     fun onFirstFrame(latencyMs: Long?) {
         if (!started) return
+        if (firstFrameLatencyMs != null) return
         if (latencyMs != null && latencyMs >= 0) firstFrameLatencyMs = latencyMs
     }
 
