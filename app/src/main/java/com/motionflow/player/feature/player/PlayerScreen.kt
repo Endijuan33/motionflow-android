@@ -1014,6 +1014,7 @@ private fun renderingSummary(
  * Under the native pipeline the Phase 6 states still apply unchanged, so nothing that subsystem reports
  * becomes unreachable, and "inactive" remains the honest word for a player with no processing path.
  */
+@Composable
 private fun processingValue(
     pipeline: ProcessingPerformanceMode,
     processing: ProcessingDiagnostics,

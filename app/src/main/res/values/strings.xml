@@ -114,7 +114,7 @@
     <string name="processing_value_unavailable">unavailable</string>
     <string name="processing_value_active">active</string>
     <string name="processing_value_active_identity">active · identity effect</string>
-    <string name="processing_note_identity_effect">Media3's identity effect is attached to the player's renderer before playback starts. It changes nothing about the picture and generates no frame: it is how the pipeline itself is measured.</string>
+    <string name="processing_note_identity_effect">The Media3 identity effect is attached to the renderer before playback starts. It changes nothing about the picture and generates no frame: it is how the pipeline itself is measured.</string>
     <string name="processing_note_pipeline_failed">The effect pipeline was configured and the player failed to run it. This is a finding about the pipeline, and playback is unaffected either way.</string>
     <string name="processing_value_failed">failed</string>
     <string name="processing_note_no_surface">No video surface is attached yet.</string>
