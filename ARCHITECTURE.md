@@ -649,7 +649,43 @@ arrives through a listener registered on the playback thread, so a device is ask
 than sixty times a minute. The one timer in the feature is the client's single wait for the window it
 chose, and it is not a poll.
 
-## 12. Build architecture
+## 12. Hardware evidence
+
+### What the characterization is made of
+
+| Layer | Role |
+| --- | --- |
+| `PerformanceRun` + `RunCondition` | One measurement with everything held constant around it: the pipeline, the video, the display, the window |
+| `PerformanceIntegrity` | The rules that decide whether a run may be compared with another one, and whether it claimed something the platform cannot provide |
+| `PerformanceSeriesStatistics` | Mean, minimum, maximum and range over repeat runs of one condition, over the metrics each run actually measured |
+| `PerformanceOverheadPolicy` | Absolute differences always, ratios only against a non-zero baseline |
+| `PerformanceFeasibilityPolicy` | The evidence gate, and the statement categories it files its reasoning under |
+| `PerformanceReport` | The deterministic local text export |
+
+Nothing in this package reaches for another engine: it does not read a display, classify a cadence or
+decode anything. The engines that own those facts are quoted into a record by the layer that has them —
+the view model — which is what keeps the performance system from being able to reinterpret cadence, and is
+enforced mechanically by the package-purity check.
+
+### The boundary between observation and interpretation
+
+The gate files every statement under one of five categories, and the categories are the point:
+
+- **Observed** — a value a device reported.
+- **Calculated** — arithmetic over observed values, and nothing else.
+- **Unknown** — a platform that exposes no reading for a metric. Named, never estimated.
+- **Not tested** — something this phase did not exercise. With no device reachable, this is most of the
+  catalogue, and it says so.
+- **Hypothesis** — what remains open, phrased as a question rather than a finding.
+
+### Why a run is kept when it is unusable
+
+A short run, a failed run and an empty run are all recorded and labelled. Discarding them would leave a
+series that looks complete, and the missing third run would be indistinguishable from a run that never
+happened — which is the difference between an experiment and a story. Statistics count only the usable
+runs; the record keeps all of them.
+
+## 13. Build architecture
 
 - **Versions:** every dependency and plugin version lives in `gradle/libs.versions.toml`. Nothing is
   declared inline except the SDK levels and application identity, which belong to the module.
@@ -672,7 +708,7 @@ chose, and it is not a poll.
 - **CI is the authority.** The workflow lints, tests and assembles on every push; a green workflow is
   the definition of "the foundation works".
 
-## 13. Testing strategy
+## 14. Testing strategy
 
 | Layer | Runs | Covers |
 | --- | --- | --- |
@@ -709,7 +745,7 @@ either engine.
 The rendering foundation has no I/O left to fake: the surface type and the metrics are events handed to
 it, so its state machine is tested directly, and the GPU is not probed anywhere.
 
-## 14. Deliberately absent
+## 15. Deliberately absent
 
 The following are missing on purpose, and each has a phase that introduces it:
 

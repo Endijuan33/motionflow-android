@@ -30,7 +30,7 @@ testable and shipped continuously.
 
 ## Current Status
 
-**Phase 7 — Processing Performance & Hardware Characterization. Complete.**
+**Phase 8 — Hardware Validation & Processing Feasibility. Complete — with hardware validation NOT TESTED.**
 
 The application plays a local video end to end, describes it, asks the display to refresh at a rate
 that suits the video's cadence, reports how well those rates line up, describes the rendering path, says
@@ -41,6 +41,11 @@ session, taken on either pipeline, reported as counts, durations and deltas.
 frame processor in the path with an identity effect that changes nothing about the picture, so what is
 measured is the *cost of the pipeline*, not a quality improvement. Nothing in the application reports a
 generated frame rate or claims a speed-up.
+
+Phase 8 built the tooling a hardware characterization needs and **did not take any measurement**: the
+environment this phase ran in has no device attached, so every number below is absent rather than
+estimated. See "Hardware characterization" — the procedure is ready to run and the evidence gate is
+deliberately unresolved.
 
 What exists now:
 
@@ -557,9 +562,10 @@ resolves Gradle itself.
 | 5 | **Rendering Pipeline Foundation** | Path described, ownership asserted. **✅ complete** |
 | 6 | **Frame Processing Architecture** | Effect API verified, request path proven. **✅ complete** |
 | 7 | **Processing Performance & Hardware Characterization** | Two measured baselines, metric availability named, hardware procedure documented. **✅ complete** |
-| 8 | **Interpolation Stage and AI Interpolation** | A stage that attaches for real, then RIFE-class models with thermal-aware fallbacks |
-| 9 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
-| 10 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
+| 8 | **Hardware Validation & Processing Feasibility** | Characterization tooling, integrity rules, evidence gate. **✅ complete, hardware NOT TESTED** |
+| 9 | Interpolation Stage and AI Interpolation | A stage that attaches for real, then RIFE-class models — scope to be set from Phase 8's evidence |
+| 10 | Adaptive Performance Management | Battery, thermal and load-aware quality scaling |
+| 11 | Production Hardening and Release | Accessibility, profiling, signing, Play release |
 
 [`ROADMAP.md`](ROADMAP.md) tracks scope and exit criteria per phase.
 
@@ -644,12 +650,91 @@ Suggested matrix, where the device and the files allow it: 23.976, 24, 25, 29.97
 fps sources against a 60, 90 or 120 Hz display. The refresh-rate engine chooses the display mode; a
 measurement never does. If a file is unavailable, no file is fabricated and no measurement is invented.
 
+## Hardware characterization
+
+Phase 8 turns a measurement into evidence: a record with its conditions, the rules that decide whether it
+may be compared with another one, statistics over repeat runs, and an evidence gate that says what the
+collected numbers do and do not license.
+
+### Hardware validation: NOT TESTED
+
+**No measurement has been taken on hardware.** The environment this phase ran in has no device:
+
+| Probe | Result |
+| --- | --- |
+| `adb devices` | adb starts, no device attached |
+| `adb connect localhost:5555` (the host's own adbd, over wireless debugging) | connection refused |
+| `pm list packages` / `pm install` | the package manager is present; the running uid is an application uid and cannot install |
+| The APK | built by CI only; no Android SDK is present locally to build or install one |
+
+So the evidence gate is **unresolved by construction**, and Phase 8's honest result is a reproducible
+procedure plus tooling that has been unit-tested, not a set of numbers. Nothing in this repository claims
+otherwise, and no reading has been invented to fill the gap.
+
+### What a run records
+
+| Record | Holds |
+| --- | --- |
+| `RunCondition` | The pipeline, the video's characteristics, the display's, and the window — everything held constant |
+| `VideoCharacteristics` | The metadata engine's measurement, the label it chose, VFR and confidence, resolution, container, duration, and a fingerprint |
+| `DisplayCharacteristics` | The panel's modes, what was requested, what the display reports, and how the request ended |
+| `PerformanceRun` | The condition, the measurement, the metrics that were *not* measured, the cadence engine's own classification, and how the run ended |
+| `CadenceObservation` | The cadence and pacing engines' conclusions, quoted by name |
+
+The fingerprint is derived from the video's *shape* — byte size, duration, resolution — and never from its
+name. A fingerprint has to survive an export so two runs can be recognised as the same file, and a hash of
+a local filename is one guess away from the filename.
+
+### How a request that was ignored is recorded
+
+Android reports an error when a refresh-rate request fails, and says nothing at all when one is ignored.
+So the record distinguishes `HONOURED`, `REFUSED`, `NOT_APPLIED` ("a rate was asked for, no error came
+back, and the display reports another one") and `UNKNOWN`. Calling an ignored request refused would be
+asserting a refusal nobody reported.
+
+### The rules that stop a comparison being invalid
+
+- Only the pipeline may differ: same video fingerprint, resolution, source rate, display rate and window.
+  Anything else is named as a blocker rather than presented as a difference.
+- A run that did not finish its window is `INCOMPLETE` and is kept — "the third run was short" is a finding,
+  and a missing third run is a hole.
+- A run that reported a metric the platform cannot measure is flagged, and the finding names the metric.
+- A zero is never a stand-in for absent: a frame-processing offset of zero with no frame count is reported
+  as a zero where nothing was measured.
+
+### Statistics, overhead and the gate
+
+Repeat runs are summarised with mean, minimum, maximum and range — never with a score. Overhead is
+reported as an absolute difference always, and as a ratio only when the baseline is not zero, because
+dividing by nothing is undefined rather than large. The evidence gate reports factual states such as
+`MEASUREMENT_INCOMPLETE`, `PIPELINE_OPERATIONAL`, `PIPELINE_OVERHEAD_CHARACTERIZED`, `THERMAL_IMPACT_OBSERVED`
+and `ADDITIONAL_DEVICE_DATA_REQUIRED`, several of which can apply at once, and files every statement under
+**observed**, **calculated**, **unknown**, **not tested** or **hypothesis**.
+
+### Running the test
+
+1. Install the debug APK from a CI artifact — the artifact's SHA-256 identifies the build.
+2. Home → **Playback pipeline → Native**. Open a local video whose rate you know.
+3. On the player, run **Measure 30 s**. Repeat at least three times on the same video and display rate.
+4. Go back, switch to **Effect pipeline** — the session restarts, which the screen warns about — and repeat
+   the same three runs on the same file.
+5. Read the panel: it names the pipeline, the measured video, what the display did with the rate request,
+   the run counts and the native-versus-effect differences.
+6. **Export characterization** and keep the text. It is plain text, produced only when you ask, and shared
+   through the system share sheet — MotionFlow has no network permission and no uploader.
+
+The export carries a coarse hardware class (manufacturer, model, ABI, API level, display modes) and a video
+fingerprint. It carries no IMEI, serial, Android ID, account, location, or file path.
+
 ## Known Limitations
 
-- **No measurement has been taken on a device.** CI has no display, no decoder and no media session, so
-  every number this phase can produce is a number the architecture *can* produce: the aggregation, the
-  session rules, the wire codec and the comparison are unit-tested, and the effect pipeline itself is
-  marked pending hardware verification. See "Performance characterization" above for the procedure.
+- **No measurement has been taken on a device**, and Phase 8 did not change that: it produced the
+  instrument and the rules for reading it. CI has no display, no decoder and no media session, so the
+  aggregation, the session rules, the wire codec, the integrity rules, the statistics, the gate and the
+  report are unit-tested, and every measured number remains absent. See "Hardware characterization" above.
+- **The evidence gate is unresolved**, which is a result rather than a gap: no state beyond
+  `MEASUREMENT_INCOMPLETE` and `ADDITIONAL_DEVICE_DATA_REQUIRED` has been earned. Nothing in the project
+  claims the pipeline is viable, and nothing claims it is not.
 - **Switching pipelines stops playback**, by Media3's own rule rather than by choice: the effects pipeline
   has to exist before `prepare()`. Documented, and stated on the screen that offers the switch.
 - **A processing offset is only comparable within the effect pipeline.** The native path has no frame

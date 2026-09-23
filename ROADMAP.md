@@ -1,6 +1,6 @@
 # MotionFlow Roadmap
 
-Eleven phases from an empty repository to a released product. Each phase is shippable on its own, and
+Twelve phases from an empty repository to a released product. Each phase is shippable on its own, and
 each has an exit criterion that can be checked rather than argued about.
 
 **Status legend:** ✅ complete · 🚧 in progress · ⏳ not started
@@ -303,7 +303,46 @@ hacks, and any claim of a generated frame rate.
 
 ---
 
-## Phase 8 — Interpolation Stage and AI Interpolation ⏳
+## Phase 8 — Hardware Validation & Processing Feasibility ✅
+
+**Goal:** turn Phase 7's instrument into evidence about whether Media3's processing pipeline is a viable
+foundation — and, where no device is reachable, say so rather than guess.
+
+**Delivered**
+
+- A characterization record: the condition a run was taken under, the measurement, the metrics that were
+  not measured, the cadence engine's own classification, and how the run ended.
+- A fingerprint derived from the video's shape rather than its name, so runs of the same file can be
+  grouped and exported without a filename leaving the device.
+- Display honesty in the record: requested rate, applied rate, and an outcome that separates *refused*
+  from *not applied*, because Android announces the first and says nothing about the second.
+- Integrity rules that name rather than repair: only the pipeline may differ between two runs; a short run
+  is INCOMPLETE and kept; a fabricated metric is flagged by name; a zero is never a stand-in for absent.
+- Statistics over repeat runs (mean, minimum, maximum, range), overhead as an absolute difference always
+  and a ratio only against a non-zero baseline, and the §18 evidence gate with its five statement
+  categories.
+- A local, deterministic text export through the system share sheet, with no telemetry, no analytics
+  dependency and no network permission in the manifest.
+- 35 new unit tests (299 in total).
+
+**Exit criteria — met in tooling, NOT TESTED in hardware**
+
+- The procedure is reproducible and documented step by step; the tooling that records, validates,
+  compares and exports is unit-tested.
+- *Not tested:* **no measurement was taken on any device.** adb starts with no device attached, a wireless
+  connection to the host's own adbd is refused, and the running uid cannot install an APK. The gate is
+  therefore unresolved, and reports `MEASUREMENT_INCOMPLETE` and `ADDITIONAL_DEVICE_DATA_REQUIRED`.
+- *Absence of evidence is the result.* No number in this phase was invented, and the brief's §24 is
+  followed to the letter: minimum tooling, unit-tested, hardware validation reported as not tested, no
+  claim of viability in either direction.
+
+**Explicitly out of scope:** interpolation, generated frames, optical flow, motion estimation, motion
+vectors, frame synthesis, AI/ML inference, RIFE/FILM/DAIN/Super SloMo, custom shaders or renderers,
+timestamp or release-time manipulation, fake FPS, and any automatic telemetry.
+
+---
+
+## Phase 9 — Interpolation Stage and AI Interpolation ⏳
 
 **Goal:** a stage that genuinely changes pictures, and then real quality interpolation behind it.
 
@@ -335,7 +374,7 @@ conclusion is a hardware run whose numbers decide how much budget a stage has.
 
 ---
 
-## Phase 9 — Adaptive Performance Management ⏳
+## Phase 10 — Adaptive Performance Management ⏳
 
 **Goal:** stay smooth and cool for the whole film, not the first five minutes.
 
@@ -352,7 +391,7 @@ conclusion is a hardware run whose numbers decide how much budget a stage has.
 
 ---
 
-## Phase 10 — Production Hardening and Release ⏳
+## Phase 11 — Production Hardening and Release ⏳
 
 **Goal:** ship it.
 
