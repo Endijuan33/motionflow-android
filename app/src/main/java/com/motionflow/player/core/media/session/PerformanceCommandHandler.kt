@@ -59,7 +59,11 @@ class PerformanceCommandHandler(
         val now = nowMs()
 
         val wire = when (command.customAction) {
-            PerformanceSessionContract.ACTION_START -> start(args, now)
+            // The Bundle is parsed here and nowhere deeper, so the typed entry points below can be
+            // driven by a test without an android.os.Bundle — which off-device is a stub that returns
+            // defaults, and would make every start look like an unreadable request.
+            PerformanceSessionContract.ACTION_START ->
+                start(PerformanceSessionContract.StartArguments.from(args), now)
             PerformanceSessionContract.ACTION_STOP -> stop(now)
             PerformanceSessionContract.ACTION_READ -> read(now)
             else -> return ProcessingSessionContract.unsupportedResult()
@@ -89,13 +93,12 @@ class PerformanceCommandHandler(
         coordinator.onModeChanged(ProcessingPerformanceMode.FAILED)
     }
 
-    private fun start(args: Bundle, now: Long): PerformanceWire {
+    internal fun start(arguments: PerformanceSessionContract.StartArguments?, now: Long): PerformanceWire {
         // A session that has run its window is finalized before a new one begins, so an abandoned run
         // cannot block the next measurement — and so its result is not lost.
         finalizeIfExpired(now)
 
-        val arguments = PerformanceSessionContract.StartArguments.from(args)
-            ?: return PerformanceWire.refused(PerformanceSessionRefusal.UNREADABLE_REQUEST)
+        if (arguments == null) return PerformanceWire.refused(PerformanceSessionRefusal.UNREADABLE_REQUEST)
 
         val outcome = coordinator.start(
             request = PerformanceSessionRequest(
@@ -126,7 +129,7 @@ class PerformanceCommandHandler(
      * hands it to the coordinator, and returns the completed diagnostics — so the answer a client
      * receives from a stop always carries the measurement, which is what it persists.
      */
-    private fun stop(now: Long): PerformanceWire {
+    internal fun stop(now: Long): PerformanceWire {
         // A session that was already finalized — by an earlier expiry, or a preceding stop — is not
         // finished again: its snapshot is done, and the current diagnostics describe it. Finishing the
         // recorder twice would read stale fields for a result that is then discarded. Reporting the
@@ -144,7 +147,7 @@ class PerformanceCommandHandler(
         return PerformanceWire.of(coordinator.diagnostics.value)
     }
 
-    private fun read(now: Long): PerformanceWire {
+    internal fun read(now: Long): PerformanceWire {
         // A read after the window has elapsed finalizes the session, so a client that never sent a stop
         // still ends up with a completed run rather than one that measures forever.
         if (finalizeIfExpired(now)) {
