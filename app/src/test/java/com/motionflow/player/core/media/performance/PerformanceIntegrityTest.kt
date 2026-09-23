@@ -53,7 +53,7 @@ class PerformanceIntegrityTest {
 
     @Test
     fun `a run that measured nothing is named as empty`() {
-        val run = completeRun(snapshot = FramePerformanceSnapshot())
+        val run = completeRun(snapshot = FramePerformanceSnapshot(), durationMs = null)
 
         val findings = PerformanceIntegrity.issues(run, support)
 

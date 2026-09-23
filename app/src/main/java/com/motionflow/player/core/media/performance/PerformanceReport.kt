@@ -175,7 +175,7 @@ object PerformanceReport {
 
         val stats = series?.let(PerformanceSeriesStatistics::of)
         if (stats != null && stats.usableRunCount > 1) {
-            appendLine("  Across ${stats.usableRunCount} usable runs (mean / min / max / range)")
+            appendLine("  Across ${stats.usableRunCount} usable runs (mean, min, max, range)")
             appendLine("    rendered       ${stats.renderedFrames.line()}")
             appendLine("    dropped        ${stats.droppedFrames.line()}")
             appendLine("    first frame    ${stats.firstFrameLatencyMs.line()}")
