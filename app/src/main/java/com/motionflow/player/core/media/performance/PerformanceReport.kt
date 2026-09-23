@@ -187,7 +187,7 @@ object PerformanceReport {
     }
 
     private fun MetricStatistics.line(): String =
-        if (!hasEvidence) NOT_MEASURED else "$mean / $minimum / $maximum / $range"
+        if (!hasEvidence) NOT_MEASURED else "$mean, $minimum, $maximum, $range"
 
     private fun resolutionOf(run: PerformanceRun): String =
         listOfNotNull(run.condition.video.width, run.condition.video.height)

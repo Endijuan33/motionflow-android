@@ -203,7 +203,7 @@ class PerformanceIntegrityTest {
     private fun completeRun(
         mode: ProcessingPerformanceMode = ProcessingPerformanceMode.NATIVE,
         status: PerformanceRunStatus = PerformanceRunStatus.COMPLETE,
-        durationMs: Long = 30_000L,
+        durationMs: Long? = 30_000L,
         fingerprint: String? = "video-a",
         sourceFps: Float? = 24f,
         displayHz: Float? = 60f,
