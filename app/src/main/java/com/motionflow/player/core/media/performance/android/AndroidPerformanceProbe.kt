@@ -45,7 +45,7 @@ class AndroidPerformanceProbe(
     private val executor: Executor?,
     private val apiLevel: Int = Build.VERSION.SDK_INT,
     private val memoryClassMb: Int? = null,
-) {
+) : com.motionflow.player.core.media.performance.MeasurementProbe {
 
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
 
@@ -67,7 +67,7 @@ class AndroidPerformanceProbe(
     }
 
     /** What this platform can measure, derived from its API level rather than assumed. */
-    fun support(): PerformanceMeasurementSupport = PerformanceMeasurementSupport.forApiLevel(apiLevel)
+    override fun support(): PerformanceMeasurementSupport = PerformanceMeasurementSupport.forApiLevel(apiLevel)
 
     /**
      * The device facts a reader needs to interpret a measurement.
@@ -76,7 +76,7 @@ class AndroidPerformanceProbe(
      * engine already owns the display, and a second reader could disagree with the one that actually
      * chooses a mode.
      */
-    fun deviceCharacteristics(supportedDisplayRefreshRatesHz: List<Float>): DeviceCharacteristics =
+    override fun deviceCharacteristics(supportedDisplayRefreshRatesHz: List<Float>): DeviceCharacteristics =
         DeviceCharacteristics(
             apiLevel = apiLevel,
             primaryAbi = Build.SUPPORTED_ABIS.firstOrNull(),

@@ -49,7 +49,7 @@ class PerformanceRecorder(
     private val probe: AndroidPerformanceProbe,
     private val playbackPositionMs: () -> Long?,
     private val nowMs: () -> Long,
-) : AnalyticsListener {
+) : AnalyticsListener, com.motionflow.player.core.media.performance.MeasurementRecorder {
 
     private val accumulator = FramePerformanceAccumulator()
 
@@ -65,10 +65,10 @@ class PerformanceRecorder(
     private var failed = false
 
     /** True while a session is collecting. */
-    val isRecording: Boolean get() = accumulator.isAccumulating
+    override val isRecording: Boolean get() = accumulator.isAccumulating
 
     /** True when the player reported an error while this session was recording. */
-    val hasFailed: Boolean get() = failed
+    override val hasFailed: Boolean get() = failed
 
     /**
      * Opens a session: takes the opening readings and starts accumulating.
@@ -76,7 +76,7 @@ class PerformanceRecorder(
      * Called on the playback thread, which is also where Media3's callbacks and the thermal listener
      * arrive, so every mutation of the accumulator happens on one thread and no lock is needed.
      */
-    fun begin() {
+    override fun begin() {
         val opening = readings()
         openedAtMs = nowMs()
         failed = false
@@ -93,7 +93,7 @@ class PerformanceRecorder(
      * The thermal watch stops here rather than lingering, so a device is never left with a listener
      * registered for a measurement that has ended.
      */
-    fun finish(): FramePerformanceSnapshot {
+    override fun finish(): FramePerformanceSnapshot {
         probe.stopThermalWatch()
         val closedAtMs = nowMs()
         val measured = accumulator.snapshot(readings(), openedAtMs?.let { closedAtMs - it })
@@ -103,7 +103,7 @@ class PerformanceRecorder(
     }
 
     /** The measurement so far, without closing the session. */
-    fun live(): FramePerformanceSnapshot {
+    override fun live(): FramePerformanceSnapshot {
         val measured = accumulator.snapshot(readings(), openedAtMs?.let { nowMs() - it })
         _snapshot.value = measured
         return measured

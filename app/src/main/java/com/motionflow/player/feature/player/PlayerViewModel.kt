@@ -493,12 +493,16 @@ class PlayerViewModel(
         val result = runCatching { controller.stop() }.getOrElse { PerformanceCommandResult.Unreachable }
         if (result.unreachable) return
 
-        _performanceReport.value = result
         val session = result.diagnostics.session
-        if (session != null && !session.isRunning) {
+        // Persist first, publish second. A completed run must be in the store before the UI can say the
+        // measurement finished, so a reader who sees "complete" and opens the export always finds the
+        // run. Publishing first and persisting afterwards is what let a finished session read as done
+        // while the archive stayed empty.
+        if (session != null && !session.isRunning && result.refusal == null) {
             performanceHistoryStore.record(session.mode, result.diagnostics.snapshot)
             performanceRunStore.record(runRecordOf(length, session.mode, result.diagnostics.snapshot))
         }
+        _performanceReport.value = result
     }
 
     /**
