@@ -96,7 +96,11 @@ import com.motionflow.player.core.media.pacing.VideoCadence
 import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
 import com.motionflow.player.core.media.performance.DeviceCharacteristics
+import com.motionflow.player.core.media.performance.DisplayRequestOutcome
+import com.motionflow.player.core.media.performance.PerformanceArchive
 import com.motionflow.player.core.media.performance.FramePerformanceSnapshot
 import com.motionflow.player.core.media.performance.PerformanceCommandResult
 import com.motionflow.player.core.media.performance.PerformanceComparison
@@ -141,6 +145,7 @@ fun PlayerScreen(
     val processing by viewModel.processingDiagnostics.collectAsStateWithLifecycle()
     val performance by viewModel.performanceReport.collectAsStateWithLifecycle()
     val comparison by viewModel.performanceComparison.collectAsStateWithLifecycle()
+    val archive by viewModel.performanceArchive.collectAsStateWithLifecycle()
 
     RequestMediaNotificationPermission()
     AttachRefreshRateEnvironment(viewModel)
@@ -154,8 +159,10 @@ fun PlayerScreen(
         processing = processing,
         performance = performance,
         comparison = comparison,
+        archive = archive,
         onStartMeasurement = viewModel::startMeasurement,
         onStopMeasurement = viewModel::stopMeasurement,
+        onCharacterizationText = viewModel::characterizationText,
         onSurfaceChange = { surfaceType ->
             if (surfaceType == null) {
                 viewModel.onRenderingSurfaceReleased()
@@ -231,8 +238,10 @@ private fun PlayerContent(
     processing: ProcessingDiagnostics,
     performance: PerformanceCommandResult,
     comparison: PerformanceComparison,
+    archive: PerformanceArchive,
     onStartMeasurement: (PerformanceSessionLength) -> Unit,
     onStopMeasurement: () -> Unit,
+    onCharacterizationText: () -> String,
     onSurfaceChange: (SurfaceType?) -> Unit,
     onNavigateBack: () -> Unit,
     onPlayPause: () -> Unit,
@@ -314,8 +323,10 @@ private fun PlayerContent(
         PerformanceSection(
             report = performance,
             comparison = comparison,
+            archive = archive,
             onStart = onStartMeasurement,
             onStop = onStopMeasurement,
+            characterizationText = onCharacterizationText,
         )
     }
 }
@@ -1020,8 +1031,10 @@ private fun processingValue(processing: ProcessingDiagnostics): String = stringR
 private fun PerformanceSection(
     report: PerformanceCommandResult,
     comparison: PerformanceComparison,
+    archive: PerformanceArchive,
     onStart: (PerformanceSessionLength) -> Unit,
     onStop: () -> Unit,
+    characterizationText: () -> String,
     modifier: Modifier = Modifier,
 ) {
     val spacing = MotionFlowTheme.spacing
@@ -1092,7 +1105,39 @@ private fun PerformanceSection(
 
         measurementNote(report, diagnostics.mode)
 
+        // What the display did for the most recent run, which is the only place a hardware test can
+        // learn that a refresh-rate request was ignored rather than refused.
+        archive.runs.lastOrNull()?.condition?.display?.let { display ->
+            Text(
+                text = stringResource(
+                    R.string.performance_display_outcome,
+                    display.requestedRefreshRateHz?.toString()
+                        ?: stringResource(R.string.performance_not_requested),
+                    display.appliedRefreshRateHz?.toString()
+                        ?: stringResource(R.string.performance_not_measured),
+                    displayOutcomeValue(display.outcome),
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (archive.runs.isNotEmpty()) {
+            Text(
+                text = stringResource(
+                    R.string.performance_runs_recorded,
+                    archive.seriesFor(ProcessingPerformanceMode.NATIVE).sumOf { it.usableRuns.size },
+                    archive.seriesFor(ProcessingPerformanceMode.EFFECT_PIPELINE).sumOf { it.usableRuns.size },
+                    archive.runs.count { !it.isUsable },
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         PerformanceComparisonSection(comparison)
+
+        ExportCharacterization(onClick = characterizationText)
 
         Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
             if (diagnostics.isMeasuring) {
@@ -1115,6 +1160,53 @@ private fun PerformanceSection(
         }
     }
 }
+
+/**
+ * Shares the characterization as text, when a person asks for it.
+ *
+ * A share sheet is the whole of the export: the text is handed to whichever application the user
+ * chooses, and MotionFlow has no network permission, no analytics dependency and no uploader. Nothing is
+ * sent anywhere by this application — a person taking their own measurements somewhere is a different
+ * act, and it is theirs to take.
+ */
+@Composable
+private fun ExportCharacterization(onClick: () -> String) {
+    val context = LocalContext.current
+    val title = stringResource(R.string.performance_export_title)
+
+    Button(
+        onClick = {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                putExtra(Intent.EXTRA_TEXT, onClick())
+            }
+            context.startActivity(Intent.createChooser(intent, title))
+        },
+    ) {
+        Text(
+            text = stringResource(R.string.performance_export_action),
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
+}
+
+/**
+ * How a refresh-rate request ended, in the terms the platform actually supports.
+ *
+ * "Not applied" is deliberately not "refused": Android reports an error when a request fails and says
+ * nothing when a request is ignored, so a rate that differs with no error is recorded as not applied.
+ */
+@Composable
+private fun displayOutcomeValue(outcome: DisplayRequestOutcome): String = stringResource(
+    when (outcome) {
+        DisplayRequestOutcome.NOT_REQUESTED -> R.string.performance_display_not_requested
+        DisplayRequestOutcome.HONOURED -> R.string.performance_display_honoured
+        DisplayRequestOutcome.REFUSED -> R.string.performance_display_refused
+        DisplayRequestOutcome.NOT_APPLIED -> R.string.performance_display_not_applied
+        DisplayRequestOutcome.UNKNOWN -> R.string.performance_display_unknown
+    },
+)
 
 /** One measurement row, or "not measured" — never a zero standing in for a reading that does not exist. */
 @Composable
@@ -1501,12 +1593,14 @@ private fun PlayerContentPreview() {
             processing = processingPreview(),
             performance = performancePreview(),
             comparison = comparisonPreview(),
+            archive = PerformanceArchive.Empty,
             onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
             onStartMeasurement = {},
             onStopMeasurement = {},
+            onCharacterizationText = { "" },
             onCycleSpeed = {},
             onToggleRepeat = {},
             onSetAutomaticRefreshRate = {},
@@ -1544,12 +1638,14 @@ private fun PlayerErrorPreview() {
                 diagnostics = PerformanceDiagnostics.Idle,
             ),
             comparison = PerformanceComparison(),
+            archive = PerformanceArchive.Empty,
             onSurfaceChange = {},
             onNavigateBack = {},
             onPlayPause = {},
             onSeek = {},
             onStartMeasurement = {},
             onStopMeasurement = {},
+            onCharacterizationText = { "" },
             onCycleSpeed = {},
             onToggleRepeat = {},
             onSetAutomaticRefreshRate = {},

@@ -160,4 +160,14 @@
     <string name="performance_note_refused">The player declined the measurement.</string>
     <string name="performance_note_unreachable">The session did not answer the measurement request.</string>
     <string name="performance_note_failed">The effect pipeline failed during this measurement, so these numbers describe a run that did not complete.</string>
+    <string name="performance_not_requested">nothing</string>
+    <string name="performance_display_outcome">Display request: %1$s Hz asked, %2$s Hz applied, %3$s</string>
+    <string name="performance_display_honoured">honoured</string>
+    <string name="performance_display_refused">refused by the platform</string>
+    <string name="performance_display_not_applied">not applied, with no refusal reported</string>
+    <string name="performance_display_unknown">no applied rate could be read</string>
+    <string name="performance_display_not_requested">no rate requested</string>
+    <string name="performance_runs_recorded">Runs recorded: %1$d native, %2$d effect pipeline, %3$d not usable</string>
+    <string name="performance_export_action">Export characterization</string>
+    <string name="performance_export_title">MotionFlow characterization</string>
 </resources>

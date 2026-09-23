@@ -3,6 +3,7 @@ package com.motionflow.player
 import android.app.Application
 import com.motionflow.player.core.media.metadata.VideoMetadataRepository
 import com.motionflow.player.core.media.performance.PerformanceHistoryStore
+import com.motionflow.player.core.media.performance.PerformanceRunStore
 import com.motionflow.player.core.media.player.PlaybackConfigurationStore
 
 /**
@@ -37,5 +38,16 @@ class MotionFlowApplication : Application() {
     /** The last measurement taken on each baseline. */
     val performanceHistoryStore: PerformanceHistoryStore by lazy {
         PerformanceHistoryStore()
+    }
+
+    /**
+     * Every characterization run recorded in this process, grouped by the condition it was taken under.
+     *
+     * Application-scoped for the same reason the pipeline choice is: a characterization spans runs taken
+     * minutes apart, and switching pipelines restarts the service. Nothing is persisted and nothing is
+     * uploaded; the export is a share action a person takes.
+     */
+    val performanceRunStore: PerformanceRunStore by lazy {
+        PerformanceRunStore()
     }
 }

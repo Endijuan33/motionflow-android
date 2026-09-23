@@ -27,10 +27,31 @@ import com.motionflow.player.core.media.player.PlayerError
 import com.motionflow.player.core.media.player.PlayerErrorKind
 import com.motionflow.player.core.media.player.PlayerState
 import com.motionflow.player.core.media.performance.PerformanceCommandResult
+import android.os.Build
+import android.os.SystemClock
+import com.motionflow.player.BuildConfig
+import com.motionflow.player.core.media.metadata.MetadataResult
+import com.motionflow.player.core.media.pacing.FramePacingMechanism
+import com.motionflow.player.core.media.performance.CadenceObservation
+import com.motionflow.player.core.media.performance.DeviceRecord
+import com.motionflow.player.core.media.performance.FramePerformanceSnapshot
+import com.motionflow.player.core.media.performance.PerformanceFeasibilityPolicy
+import com.motionflow.player.core.media.performance.PerformanceMetric
+import com.motionflow.player.core.media.performance.PerformanceReport
+import com.motionflow.player.core.media.performance.DisplayCharacteristics
+import com.motionflow.player.core.media.performance.DisplayRequestOutcome
+import com.motionflow.player.core.media.performance.PerformanceArchive
 import com.motionflow.player.core.media.performance.PerformanceComparison
 import com.motionflow.player.core.media.performance.PerformanceDiagnostics
+import com.motionflow.player.core.media.performance.PerformanceRun
+import com.motionflow.player.core.media.performance.PerformanceRunStatus
+import com.motionflow.player.core.media.performance.ProcessingPerformanceMode
 import com.motionflow.player.core.media.performance.PerformanceSessionLength
 import com.motionflow.player.core.media.performance.PerformanceSessionRequest
+import com.motionflow.player.core.media.performance.RunCondition
+import com.motionflow.player.core.media.performance.RunTimestamp
+import com.motionflow.player.core.media.performance.VideoCharacteristics
+import com.motionflow.player.core.media.performance.VideoFingerprint
 import com.motionflow.player.core.media.performance.android.MediaSessionPerformanceController
 import com.motionflow.player.core.media.processing.ProcessingCoordinator
 import com.motionflow.player.core.media.processing.ProcessingDiagnostics
@@ -44,6 +65,7 @@ import com.motionflow.player.core.media.rendering.RenderingCoordinator
 import com.motionflow.player.core.media.rendering.RenderingDiagnostics
 import com.motionflow.player.core.media.rendering.SurfaceType
 import com.motionflow.player.core.media.session.MotionFlowMediaSessionService
+import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,6 +107,18 @@ class PlayerViewModel(
      * restarts the service — so the history has to outlive every screen and every service.
      */
     private val performanceHistoryStore = (application as MotionFlowApplication).performanceHistoryStore
+
+    /**
+     * Every run recorded in this process, grouped by condition.
+     *
+     * The archive is where a characterization lives: runs of the same video, rate and window are grouped
+     * so repeat-to-repeat variation can be seen, and the comparison of two pipelines is drawn from two
+     * groups that describe the same conditions.
+     */
+    private val performanceRunStore = (application as MotionFlowApplication).performanceRunStore
+
+    /** The archive, for a panel that shows what has been measured. */
+    val performanceArchive: StateFlow<PerformanceArchive> = performanceRunStore.archive
 
     private val refreshRateCoordinator = RefreshRateCoordinator(viewModelScope)
 
@@ -163,6 +197,9 @@ class PlayerViewModel(
 
     /** The window the running measurement was started with, so it can be stopped on time. */
     private var measurementLength: PerformanceSessionLength? = null
+
+    /** When the running measurement began, as a monotonic reading. Not a wall clock, and never exported. */
+    private var measurementStartedAtMs: Long? = null
 
     /** When the current item was asked to prepare, so first-frame latency can be measured. */
     private var prepareRequestedAtNanos: Long? = null
@@ -397,20 +434,21 @@ class PlayerViewModel(
             if (result.unreachable || result.diagnostics.session?.isRunning != true) return@launch
 
             measurementLength = length
+            measurementStartedAtMs = SystemClock.elapsedRealtime()
             // The controlled window, elapsed once. A session that is stopped early is closed by
             // stopMeasurement instead, and the service closes one whose window has passed without it.
             delay(length.durationMs)
-            measurementLength = null
-            closeMeasurement()
+            closeMeasurement(length)
         }
     }
 
-    /** Ends the running measurement early, keeping what it measured. */
+    /** Ends the running measurement early, keeping what it measured and labelling it as short. */
     fun stopMeasurement() {
+        val length = measurementLength ?: return
         if (!_performanceReport.value.diagnostics.isMeasuring) return
 
         measurementLength = null
-        viewModelScope.launch { closeMeasurement() }
+        viewModelScope.launch { closeMeasurement(length) }
     }
 
     /**
@@ -435,7 +473,7 @@ class PlayerViewModel(
      * A failed run is not filed: the diagnostics report the failure as a failure, and keeping its
      * numbers beside a complete measurement would invite comparing nothing with something.
      */
-    private suspend fun closeMeasurement() {
+    private suspend fun closeMeasurement(length: PerformanceSessionLength) {
         val controller = performanceController ?: return
 
         val result = runCatching { controller.stop() }.getOrElse { PerformanceCommandResult.Unreachable }
@@ -445,7 +483,173 @@ class PlayerViewModel(
         val session = result.diagnostics.session
         if (session != null && !session.isRunning) {
             performanceHistoryStore.record(session.mode, result.diagnostics.snapshot)
+            performanceRunStore.record(runRecordOf(length, session.mode, result.diagnostics.snapshot))
         }
+    }
+
+    /**
+     * Files a finished session as a characterization run.
+     *
+     * The status is decided from what was measured rather than trusted from a label: a run that claims to
+     * have completed but did not last its window is recorded as incomplete, because the label is what a
+     * comparison trusts and a short window compared with a full one would be a false difference.
+     *
+     * Every context field comes from the engine that owns it — the metadata engine for the video, the
+     * refresh engine for the display, the cadence engine for the classification — and none of them is
+     * re-derived here. That is what keeps the processing pipeline from being able to change what cadence
+     * means.
+     */
+    private fun runRecordOf(
+        length: PerformanceSessionLength,
+        mode: ProcessingPerformanceMode,
+        snapshot: FramePerformanceSnapshot,
+    ): PerformanceRun {
+        val measured = snapshot.measurementDurationMs
+        val status = when {
+            mode == ProcessingPerformanceMode.FAILED -> PerformanceRunStatus.FAILED
+            measured != null && measured >= (length.durationMs * COMPLETE_WINDOW_FRACTION).toLong() ->
+                PerformanceRunStatus.COMPLETE
+
+            else -> PerformanceRunStatus.INCOMPLETE
+        }
+
+        return PerformanceRun(
+            index = 0,
+            startedAt = measurementStartedAtMs?.let(::RunTimestamp),
+            condition = RunCondition(
+                mode = mode,
+                video = videoCharacteristics(),
+                display = displayCharacteristics(),
+                length = length,
+            ),
+            snapshot = snapshot,
+            unsupported = snapshot.unavailable,
+            cadence = cadenceObservation(),
+            status = status,
+        )
+    }
+
+    /** What the metadata engine measured about the video, copied rather than reinterpreted. */
+    private fun videoCharacteristics(): VideoCharacteristics {
+        val metadata = (_uiState.value.metadata as? MetadataResult.Success)?.metadata
+        val track = metadata?.video
+        val frameRate = track?.frameRate
+
+        return VideoCharacteristics(
+            fingerprint = VideoFingerprint.of(
+                sizeBytes = metadata?.fileSizeBytes,
+                durationMs = metadata?.durationMs,
+                width = track?.width,
+                height = track?.height,
+            ),
+            sourceFps = frameRate?.fps,
+            namedRate = frameRate?.knownRate?.name,
+            isVariableFrameRate = frameRate?.isVariableFrameRate,
+            confidence = frameRate?.confidence?.name,
+            width = track?.width,
+            height = track?.height,
+            containerType = metadata?.mimeType,
+            durationMs = metadata?.durationMs,
+        )
+    }
+
+    /**
+     * What the display was asked for and what it did.
+     *
+     * The refresh engine remains the only thing that chooses a mode; this copies its decision, its
+     * applied rate and its error, and derives nothing it did not already say. The one thing it cannot say
+     * is whether a request was *silently* ignored, and that is recorded as `NOT_APPLIED` rather than as a
+     * refusal: a rate that differs, with no error, is a request that did not take effect, and calling it
+     * refused would be inventing a refusal nobody reported.
+     */
+    private fun displayCharacteristics(): DisplayCharacteristics {
+        val state = refreshRateCoordinator.state.value
+        val requestedHz = state.decision.targetMode?.refreshRateHz
+        val appliedHz = state.appliedRefreshRateHz
+
+        val outcome = when {
+            requestedHz == null -> DisplayRequestOutcome.NOT_REQUESTED
+            state.error != null -> DisplayRequestOutcome.REFUSED
+            appliedHz == null -> DisplayRequestOutcome.UNKNOWN
+            abs(appliedHz - requestedHz) <= REFRESH_RATE_EPSILON_HZ -> DisplayRequestOutcome.HONOURED
+            else -> DisplayRequestOutcome.NOT_APPLIED
+        }
+
+        return DisplayCharacteristics(
+            panelRefreshRatesHz = state.capabilities.modes
+                .filter { it.isUsable }
+                .map { it.refreshRateHz }
+                .distinct(),
+            requestedRefreshRateHz = requestedHz,
+            appliedRefreshRateHz = appliedHz,
+            automaticSelectionEnabled = state.isAutomaticEnabled,
+            outcome = outcome,
+            engineStatus = state.decision.status.name,
+            errorName = state.error?.name,
+        )
+    }
+
+    /** The cadence and pacing engines' own conclusions, quoted so the interaction can be checked. */
+    private fun cadenceObservation(): CadenceObservation {
+        val pacing = framePacingState.value
+        val refresh = refreshRateCoordinator.state.value
+
+        return CadenceObservation(
+            cadenceMode = (pacing.diagnostics?.mode ?: pacing.decision.mode).name,
+            cadenceReason = (pacing.diagnostics?.reason ?: pacing.decision.reason).name,
+            pacingMode = pacing.decision.mode.name,
+            pacingApplied = pacing.decision.mechanism != FramePacingMechanism.NONE,
+            sourceFps = refresh.frameRate.fps,
+            displayRefreshRateHz = refresh.appliedRefreshRateHz,
+        )
+    }
+
+    /**
+     * The characterization as plain text, for a person to keep or share themselves.
+     *
+     * Produced on demand and never sent anywhere: there is no analytics dependency, no uploader and no
+     * background anything. The device fields are the coarse hardware class the phase's rules allow —
+     * manufacturer, model and an ABI, never an identifier — and the video appears as a fingerprint
+     * derived from its shape rather than from its name.
+     */
+    fun characterizationText(): String {
+        val archive = performanceRunStore.archive.value
+        val pair = archive.comparablePair()
+        val support = _performanceReport.value.diagnostics.support
+
+        return PerformanceReport.text(
+            device = deviceRecord(),
+            native = pair.native,
+            effect = pair.effect,
+            feasibility = PerformanceFeasibilityPolicy.evaluate(pair.native, pair.effect, support),
+            support = support,
+        )
+    }
+
+    /** The build and the coarse hardware class, and nothing that identifies a person or a device. */
+    private fun deviceRecord(): DeviceRecord {
+        val display = refreshRateCoordinator.state.value.capabilities
+
+        return DeviceRecord(
+            apiLevel = Build.VERSION.SDK_INT,
+            manufacturer = Build.MANUFACTURER,
+            model = Build.MODEL,
+            soc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else Build.HARDWARE,
+            primaryAbi = Build.SUPPORTED_ABIS.firstOrNull(),
+            cpuArchitecture = System.getProperty("os.arch"),
+            screenWidthPx = null,
+            screenHeightPx = null,
+            screenDensityDpi = null,
+            // Deliberately unrecorded: the refresh engine owns display access and exposes modes, not HDR
+            // capability. A second display reader for one boolean would be a second owner of the display.
+            hdrCapable = null,
+            supportedDisplayRefreshRatesHz = display.modes.map { it.refreshRateHz }.distinct(),
+            memoryClassMb = null,
+            thermalApiAvailable = _performanceReport.value.diagnostics.support
+                .supports(PerformanceMetric.THERMAL_STATUS),
+            media3Version = null,
+            build = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        )
     }
 
     override fun onCleared() {
@@ -657,5 +861,11 @@ class PlayerViewModel(
         const val TAG = "MotionFlowPlayback"
         const val POSITION_POLL_INTERVAL_MS = 500L
         const val NANOS_PER_MILLI = 1_000_000L
+
+        /** A run has to last this much of its window to count as complete, matching the integrity rule. */
+        const val COMPLETE_WINDOW_FRACTION = 0.9
+
+        /** Two refresh rates are the same rate when they differ by less than this. */
+        const val REFRESH_RATE_EPSILON_HZ = 0.5f
     }
 }
