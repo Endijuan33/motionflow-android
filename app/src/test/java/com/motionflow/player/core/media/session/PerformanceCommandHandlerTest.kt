@@ -161,7 +161,7 @@ class PerformanceCommandHandlerTest {
 
         val wire = decode(quiet.handle(PerformanceSessionContract.startCommand, startArgs(PerformanceSessionLength.SIXTY)))
 
-        assertTrue(wire.refused)
+        assertFalse(wire.accepted)
         assertEquals(0, recorder.beginCount)
     }
 
