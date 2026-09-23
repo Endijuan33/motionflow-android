@@ -113,6 +113,9 @@
     <string name="processing_value_inactive">inactive</string>
     <string name="processing_value_unavailable">unavailable</string>
     <string name="processing_value_active">active</string>
+    <string name="processing_value_active_identity">active · identity effect</string>
+    <string name="processing_note_identity_effect">Media3's identity effect is attached to the player's renderer before playback starts. It changes nothing about the picture and generates no frame: it is how the pipeline itself is measured.</string>
+    <string name="processing_note_pipeline_failed">The effect pipeline was configured and the player failed to run it. This is a finding about the pipeline, and playback is unaffected either way.</string>
     <string name="processing_value_failed">failed</string>
     <string name="processing_note_no_surface">No video surface is attached yet.</string>
     <string name="processing_note_no_stage">No processing stage exists in this build.</string>
@@ -134,8 +137,8 @@
     <string name="performance_running">measuring %1$s</string>
     <string name="performance_start_action">Measure %1$d s</string>
     <string name="performance_stop_action">Stop</string>
-    <string name="performance_mode">Mode: %1$s</string>
-    <string name="performance_first_frame">First frame: %1$s</string>
+    <string name="performance_pipeline">Playback pipeline: %1$s</string>
+    <string name="performance_first_frame">First frame in window: %1$s</string>
     <string name="performance_rendered">Rendered: %1$s</string>
     <string name="performance_dropped">Dropped: %1$s</string>
     <string name="performance_processing_offset">Frame processing offset: %1$s</string>

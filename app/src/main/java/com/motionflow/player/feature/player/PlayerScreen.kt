@@ -318,7 +318,11 @@ private fun PlayerContent(
 
         FramePacingDiagnostics(state = framePacing)
 
-        RenderingSection(diagnostics = rendering, processing = processing)
+        RenderingSection(
+            diagnostics = rendering,
+            processing = processing,
+            pipeline = performance.diagnostics.mode,
+        )
 
         PerformanceSection(
             report = performance,
@@ -948,12 +952,12 @@ private fun refreshRateReason(model: RefreshRateDiagnosticsModel): String? = whe
 private fun RenderingSection(
     diagnostics: RenderingDiagnostics,
     processing: ProcessingDiagnostics,
+    pipeline: ProcessingPerformanceMode,
     modifier: Modifier = Modifier,
 ) {
     val spacing = MotionFlowTheme.spacing
-    // A note explains why the path is unavailable, inactive or failed. "native" claims nothing, so it
-    // gets no note: the mode and its reason are paired, not stored, and this mirrors that pairing.
-    val note = if (processing.mode == ProcessingMode.NATIVE) null else processingNote(processing)
+    // A note explains what the pipeline is, or why the path is unavailable, inactive or failed.
+    val note = processingNoteFor(pipeline, processing)
 
     Column(
         modifier = modifier
@@ -962,7 +966,7 @@ private fun RenderingSection(
         verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
     ) {
         Text(
-            text = renderingSummary(diagnostics, processing),
+            text = renderingSummary(diagnostics, processing, pipeline),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -983,6 +987,7 @@ private fun RenderingSection(
 private fun renderingSummary(
     diagnostics: RenderingDiagnostics,
     processing: ProcessingDiagnostics,
+    pipeline: ProcessingPerformanceMode,
 ): String {
     val firstFrame = diagnostics.metrics.firstFrameLatencyMs?.let { latency ->
         stringResource(R.string.rendering_first_frame, latency.toString())
@@ -992,29 +997,57 @@ private fun renderingSummary(
             R.string.rendering_label,
             stringResource(R.string.rendering_mode_native_media3),
         ),
-        stringResource(R.string.processing_label, processingValue(processing)),
+        stringResource(R.string.processing_label, processingValue(pipeline, processing)),
         firstFrame,
     )
     return parts.joinToString(SUMMARY_SEPARATOR)
 }
 
 /**
- * The processing state, and nothing more.
+ * What the processing line says, decided by the pipeline the player was *built* with.
  *
- * "active" is reachable only when a player has reported that a stage attached, so no amount of asking
- * can produce the label. Nothing names an effect, an acceleration or an output frame rate: this
- * version attaches nothing, and a label for it would describe something that does not exist.
+ * The pipeline is the only thing that describes the running player, so it decides this row. A player
+ * constructed with Media3's identity effect has a processing path in it, and calling that "inactive"
+ * would contradict the pipeline the user selected — which is exactly how a working effect pipeline came
+ * to look like a selection that never arrived.
+ *
+ * Under the native pipeline the Phase 6 states still apply unchanged, so nothing that subsystem reports
+ * becomes unreachable, and "inactive" remains the honest word for a player with no processing path.
  */
-@Composable
-private fun processingValue(processing: ProcessingDiagnostics): String = stringResource(
-    when (processing.mode) {
-        ProcessingMode.NATIVE -> R.string.processing_value_native
-        ProcessingMode.PROCESSING_INACTIVE -> R.string.processing_value_inactive
-        ProcessingMode.PROCESSING_UNAVAILABLE -> R.string.processing_value_unavailable
-        ProcessingMode.PROCESSING_ACTIVE -> R.string.processing_value_active
-        ProcessingMode.PROCESSING_FAILED -> R.string.processing_value_failed
+private fun processingValue(
+    pipeline: ProcessingPerformanceMode,
+    processing: ProcessingDiagnostics,
+): String = stringResource(
+    when (pipeline) {
+        ProcessingPerformanceMode.EFFECT_PIPELINE -> R.string.processing_value_active_identity
+        ProcessingPerformanceMode.FAILED -> R.string.processing_value_failed
+        ProcessingPerformanceMode.NATIVE -> when (processing.mode) {
+            ProcessingMode.NATIVE -> R.string.processing_value_native
+            ProcessingMode.PROCESSING_INACTIVE -> R.string.processing_value_inactive
+            ProcessingMode.PROCESSING_UNAVAILABLE -> R.string.processing_value_unavailable
+            ProcessingMode.PROCESSING_ACTIVE -> R.string.processing_value_active
+            ProcessingMode.PROCESSING_FAILED -> R.string.processing_value_failed
+        }
     },
 )
+
+/**
+ * Why the processing line says what it says.
+ *
+ * For a player built with the effect pipeline the explanation is the identity effect itself: it is
+ * attached to the renderer before playback starts, it is Media3's, and it changes nothing about the
+ * picture and generates no frame. For the native pipeline the Phase 6 reasons apply as they always did.
+ */
+@Composable
+private fun processingNoteFor(
+    pipeline: ProcessingPerformanceMode,
+    processing: ProcessingDiagnostics,
+): String? = when (pipeline) {
+    ProcessingPerformanceMode.EFFECT_PIPELINE -> stringResource(R.string.processing_note_identity_effect)
+    ProcessingPerformanceMode.FAILED -> stringResource(R.string.processing_note_pipeline_failed)
+    ProcessingPerformanceMode.NATIVE ->
+        if (processing.mode == ProcessingMode.NATIVE) null else processingNote(processing)
+}
 
 /**
  * What was measured, on which pipeline, and what could not be measured at all.
@@ -1065,7 +1098,10 @@ private fun PerformanceSection(
         )
 
         Text(
-            text = stringResource(R.string.performance_mode, processingModeValue(diagnostics.mode)),
+            text = stringResource(
+                R.string.performance_pipeline,
+                stringResource(processingModeValue(diagnostics.mode)),
+            ),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

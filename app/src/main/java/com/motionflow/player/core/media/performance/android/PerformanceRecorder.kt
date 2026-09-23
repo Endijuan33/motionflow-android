@@ -6,6 +6,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DecoderCounters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime
+import com.motionflow.player.core.media.performance.FirstFrameLatency
 import com.motionflow.player.core.media.performance.FramePerformanceAccumulator
 import com.motionflow.player.core.media.performance.FramePerformanceReadings
 import com.motionflow.player.core.media.performance.FramePerformanceSnapshot
@@ -132,9 +133,16 @@ class PerformanceRecorder(
         counters = null
     }
 
-    /** How long the first presented frame took, as Media3 measured it from playback start. */
+    /**
+     * How long the first presented frame took, relative to this session's start.
+     *
+     * Media3 passes a `SystemClock.elapsedRealtime()` timestamp here, not a duration — see
+     * [FirstFrameLatency], which does the conversion and refuses to state a latency for a frame that
+     * arrived before the session began. Storing the raw value is what produced a first-frame reading of
+     * several hundred million milliseconds on real hardware.
+     */
     override fun onRenderedFirstFrame(eventTime: EventTime, output: Any, renderTimeMs: Long) {
-        accumulator.onFirstFrame(renderTimeMs)
+        accumulator.onFirstFrame(FirstFrameLatency.of(renderTimeMs, openedAtMs))
     }
 
     /**

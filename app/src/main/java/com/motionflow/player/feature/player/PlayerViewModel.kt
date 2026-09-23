@@ -451,6 +451,21 @@ class PlayerViewModel(
     }
 
     /**
+     * Asks the service which pipeline it built the player with, and shows that.
+     *
+     * Deliberately not the Home selection: a selection that has not been applied is a wish, and the
+     * whole point of this reading is to distinguish "the user chose the effect pipeline" from "the
+     * player is running it". The answer comes from the service's own engine, so it cannot disagree with
+     * what is playing.
+     */
+    private suspend fun readPipelineState() {
+        val controller = performanceController ?: return
+
+        val result = runCatching { controller.read() }.getOrElse { PerformanceCommandResult.Unreachable }
+        if (!result.unreachable) _performanceReport.value = result
+    }
+
+    /**
      * Asks the session for the current picture.
      *
      * Called when the screen already knows something changed — a first frame, the end of a session —
@@ -727,6 +742,12 @@ class PlayerViewModel(
         // The measurement travels the same route, for the same reason: the recorder lives where the
         // player lives, and a screen can only ask.
         performanceController = MediaSessionPerformanceController(controller)
+
+        // One read as soon as the session is up, so the panel reports the pipeline the engine was
+        // *actually* built with before anyone starts a measurement. The service answers with the
+        // configuration it constructed the player from, which is the only value that describes the
+        // running player. A single request on connect — not a poll, and not a timer.
+        viewModelScope.launch { readPipelineState() }
         loadSource(controller)
         syncState()
     }

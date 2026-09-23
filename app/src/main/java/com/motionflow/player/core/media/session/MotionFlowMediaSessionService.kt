@@ -90,12 +90,7 @@ class MotionFlowMediaSessionService : MediaSessionService() {
         configurationWatch?.cancel()
         configurationWatch = null
         scope.cancel()
-        mediaSession?.release()
-        mediaSession = null
-        engine?.release()
-        engine = null
-        recorder = null
-        performanceHandler = null
+        releaseEngineAndSession()
         super.onDestroy()
     }
 
@@ -136,13 +131,36 @@ class MotionFlowMediaSessionService : MediaSessionService() {
             .build()
     }
 
+    /** Releases the session and the engine together, so no half-built pair can be left behind. */
+    private fun releaseEngineAndSession() {
+        mediaSession?.release()
+        mediaSession = null
+        engine?.release()
+        engine = null
+        recorder = null
+        performanceHandler = null
+    }
+
     /**
-     * Releases the engine when the user asks for a different pipeline.
+     * Rebuilds the engine when the user asks for a different pipeline.
      *
-     * Deliberately not a rebuild in place: building the replacement here would mean a second place that
-     * creates a player, and the invariant worth keeping is that the engine is created in [onCreate] and
-     * nowhere else. Stopping the service makes the next start build the requested pipeline, which is
-     * exactly the "configuration → build → prepare" order Media3 requires.
+     * ## Why the replacement is built here rather than left to the next start
+     *
+     * Phase 7 released the engine and called `stopSelf()`, expecting the next connection to create a
+     * fresh service that would read the new configuration. That relies on the service actually being
+     * destroyed — which depends on how it was started, on what is bound to it, and on the platform's own
+     * timing — and if the destruction does not happen the surviving service holds the *old* engine while
+     * the new selection sits unread in the store. The convergence the architecture promises must not
+     * depend on a lifecycle event the application does not control.
+     *
+     * So the engine and session are replaced here, in this one place, with the old pair released first:
+     * one engine exists at a time by construction rather than by convention, and the requested
+     * configuration is always the configuration that is running. [onCreate] and this method call the same
+     * builder, which is what keeps "exactly one construction path" true mechanically.
+     *
+     * Rebuilding stops playback — the engine is being replaced, and Media3 requires the effects pipeline
+     * to exist before `prepare()`, so there is no way to change it under a prepared player. That is the
+     * documented measurement limitation, unchanged.
      */
     private fun watchRequestedConfiguration() {
         configurationWatch = scope.launch {
@@ -151,13 +169,11 @@ class MotionFlowMediaSessionService : MediaSessionService() {
                 .collect { requested ->
                     if (requested == engine?.configuration) return@collect
 
-                    Log.d(TAG, "Playback pipeline changed to ${requested.processingMode}; restarting the engine")
-                    mediaSession?.release()
-                    mediaSession = null
-                    engine?.release()
-                    engine = null
-                    recorder = null
-                    performanceHandler = null
+                    Log.d(TAG, "Playback pipeline changed to ${requested.processingMode}; rebuilding the engine")
+                    releaseEngineAndSession()
+                    buildEngineAndSession(requested)
+                    // Only a tidy-up: the rebuild has already happened, so whether the service is torn
+                    // down now or later cannot change which pipeline is running.
                     stopSelf()
                 }
         }
