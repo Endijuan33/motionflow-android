@@ -720,6 +720,10 @@ and `ADDITIONAL_DEVICE_DATA_REQUIRED`, several of which can apply at once, and f
    the same three runs on the same file.
 5. Read the panel: it names the pipeline, the measured video, what the display did with the rate request,
    the run counts and the native-versus-effect differences.
+   Native shows `Playback pipeline: Native` and `Processing: inactive`; the effect pipeline
+   shows `Playback pipeline: Effect Pipeline` and `Processing: active · identity effect`, both before
+   any measurement starts, because the row describes the player that was built rather than the
+   selection that was made.
 6. **Export characterization** and keep the text. It is plain text, produced only when you ask, and shared
    through the system share sheet — MotionFlow has no network permission and no uploader.
 

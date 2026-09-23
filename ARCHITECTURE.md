@@ -641,6 +641,24 @@ panel, which prints "not measured". Metrics no Android version publishes at all 
 property of the platform, named in `PerformanceMeasurementSupport`, and kept out of the per-session list so
 a device is never blamed for a gap in Android.
 
+### First-frame latency, measured against the session
+
+Media3's `onRenderedFirstFrame` reports `renderTimeMs` as a `SystemClock.elapsedRealtime()` *timestamp*,
+not a duration. First-frame latency is therefore defined as that timestamp minus the measurement
+session's start, on the same clock — a duration relative to the window. A frame that arrived before the
+session began is reported as *not measured* rather than as a negative, a zero, or a value carried over
+from a previous window. `System.nanoTime()` and `elapsedRealtime()` are never mixed: both are monotonic
+and have unrelated epochs, so subtracting one from the other is a confident nonsense.
+
+### The pipeline the panel reports is the one the player was built with
+
+The diagnostics row describes the *running* player, not the Home selection. The service answers a read
+with the configuration it constructed the engine from, so `Playback pipeline: Effect Pipeline` means the
+identity effect is in the renderer, not that someone asked for it. Changing the selection rebuilds the
+engine in place — the old session and engine are released first, one builder serves both `onCreate` and
+the configuration observer — so the requested pipeline is always the pipeline that is running, and this
+does not depend on the service being torn down by the platform.
+
 ### Measurement hygiene
 
 No per-frame logging, no disk, no network, no bitmaps, no screen capture, no polling. A snapshot is
