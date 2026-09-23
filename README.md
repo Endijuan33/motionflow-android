@@ -671,6 +671,14 @@ So the evidence gate is **unresolved by construction**, and Phase 8's honest res
 procedure plus tooling that has been unit-tested, not a set of numbers. Nothing in this repository claims
 otherwise, and no reading has been invented to fill the gap.
 
+> **Corrective note (post-Phase-8).** A device run — Xiaomi 24069PC21G, API 36 — exposed a defect in the
+> instrumentation itself: a completed 60-second session was never persisted, so the export read "no runs
+> recorded" even after the session had run well past its window. The cause was a session being finalized
+> twice, the second finalization returning an empty refusal the client then stored as nothing. It is
+> fixed (single finalization point, persist-before-publish) and covered by JVM tests. **This corrected
+> the instrumentation; it did not produce a measurement.** The gate remains unresolved until a real
+> complete Native run and a real complete Effect run exist.
+
 ### What a run records
 
 | Record | Holds |

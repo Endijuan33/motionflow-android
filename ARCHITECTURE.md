@@ -627,7 +627,26 @@ and "the engine is created in `onCreate` and nowhere else" is worth more than th
 | `PerformanceRecorder` | The adapter: one Media3 callback -> one accumulator call. Holds the counters, makes no decisions |
 | `PerformanceSessionCoordinator` | The session's lifecycle: one at a time, a controlled window, refused when nothing is loaded |
 | `PerformanceSessionContract` | The wire: three commands, one flat answer, and absent fields that stay absent |
-| `PerformanceCommandHandler` | Answers START, STOP and READ where the player lives, and closes a session whose window has passed |
+| `PerformanceCommandHandler` | Answers START, STOP and READ where the player lives, and finalizes a session — exactly once — when its window has elapsed or a stop arrives |
+
+### How a session completes and is persisted
+
+A session ends the first moment either its window has elapsed or the client stops it. Every command
+routes through a single finalization point: `stop()` finishes the recorder only while the session is
+still running, and `start()`/`read()` finalize an expired session before doing their own work. A stop
+that arrives after the window has already been finalized reports the completed run rather than a refusal,
+so the measurement cannot be lost to the order an expiry and a stop happened to fire in.
+
+The client persists before it publishes: a completed run is written to the store *before* the UI reports
+the measurement as finished, so a reader who sees "complete" and opens the export always finds the run. A
+refused or unreachable result persists nothing. This ordering — and the single finalization point —
+replaced a Phase 8 defect in which an expired window was finalized twice: the second finalization found
+nothing running, answered with an empty `NOT_RUNNING` refusal, and the client stored no run at all, so a
+completed 60-second session on real hardware exported as "no runs recorded".
+
+The handler's collaborators are the `MeasurementRecorder` and `MeasurementProbe` seams, so this
+completion path is exercised on the JVM against a controllable clock; the production recorder and probe
+implement them unchanged.
 
 Counters are read at the two ends of a session rather than accumulated per event, so the overhead does not
 scale with frame count. Because the renderer's counter object is held between those reads, there is no
