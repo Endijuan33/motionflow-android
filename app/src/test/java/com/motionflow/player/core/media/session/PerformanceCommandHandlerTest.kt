@@ -29,7 +29,7 @@ class PerformanceCommandHandlerTest {
 
     private var now = 1_000L
     private val clock = { now }
-    private val recorder = FakeRecorder()
+    private val recorder = FakeRecorder { now }
     private val probe = FakeProbe()
     private val coordinator = PerformanceSessionCoordinator(probe.support())
     private val handler = PerformanceCommandHandler(
@@ -183,10 +183,11 @@ class PerformanceCommandHandlerTest {
             displayRefreshRateHz = 60f,
         )
 
-    private class FakeRecorder : MeasurementRecorder {
+    private class FakeRecorder(private val nowMs: () -> Long) : MeasurementRecorder {
         var beginCount = 0
         var finishCount = 0
         private var recording = false
+        private var beganAt = 0L
 
         override val isRecording: Boolean get() = recording
         override val hasFailed: Boolean get() = false
@@ -194,12 +195,16 @@ class PerformanceCommandHandlerTest {
         override fun begin() {
             beginCount++
             recording = true
+            beganAt = nowMs()
         }
 
         override fun finish(): FramePerformanceSnapshot {
             finishCount++
             recording = false
-            return SNAPSHOT
+            // The real recorder measures the window from its own clock; the fake does the same, so an
+            // early stop reports a short window and a full run reports a full one — which is what lets
+            // the integrity-relevant assertions here mean something.
+            return SNAPSHOT.copy(measurementDurationMs = nowMs() - beganAt)
         }
 
         override fun live(): FramePerformanceSnapshot = SNAPSHOT.copy(renderedFrames = 200)
@@ -211,9 +216,7 @@ class PerformanceCommandHandlerTest {
                 firstFrameLatencyMs = 412L,
                 decoderInitializationMs = 120L,
                 playbackPositionMs = 60_000L,
-                // The recorder computes this from its own clock; the fake reports a full window so the
-                // integrity layer treats a not-stopped-early run as complete.
-                measurementDurationMs = 60_050L,
+                measurementDurationMs = 0L,
                 videoWidth = 1920,
                 videoHeight = 1080,
                 cpuTimeMs = 8_000L,
