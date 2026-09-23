@@ -30,7 +30,6 @@ import com.motionflow.player.core.media.performance.PerformanceCommandResult
 import android.os.Build
 import android.os.SystemClock
 import com.motionflow.player.BuildConfig
-import com.motionflow.player.core.media.metadata.MetadataResult
 import com.motionflow.player.core.media.pacing.FramePacingMechanism
 import com.motionflow.player.core.media.performance.CadenceObservation
 import com.motionflow.player.core.media.performance.DeviceRecord
